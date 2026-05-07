@@ -172,28 +172,29 @@ function PropertyForm({ firmId, onSaved, onCancel }: PropertyFormProps) {
         <h3 className="font-semibold mb-4">New property</h3>
         <form onSubmit={handleSubmit} className="grid grid-cols-2 gap-4">
           <div className="col-span-2 space-y-1">
-            <label className="text-sm font-medium">Property name *</label>
-            <Input required value={values.name} onChange={e => set('name', e.target.value)} placeholder="e.g. Maple House" />
+            <label htmlFor="prop-name" className="text-sm font-medium">Property name *</label>
+            <Input id="prop-name" required value={values.name} onChange={e => set('name', e.target.value)} placeholder="e.g. Maple House" />
           </div>
           <div className="col-span-2 space-y-1">
-            <label className="text-sm font-medium">Address line 1 *</label>
-            <Input required value={values.address_line1} onChange={e => set('address_line1', e.target.value)} />
+            <label htmlFor="prop-addr1" className="text-sm font-medium">Address line 1 *</label>
+            <Input id="prop-addr1" required value={values.address_line1} onChange={e => set('address_line1', e.target.value)} />
           </div>
           <div className="space-y-1">
-            <label className="text-sm font-medium">Address line 2</label>
-            <Input value={values.address_line2} onChange={e => set('address_line2', e.target.value)} />
+            <label htmlFor="prop-addr2" className="text-sm font-medium">Address line 2</label>
+            <Input id="prop-addr2" value={values.address_line2} onChange={e => set('address_line2', e.target.value)} />
           </div>
           <div className="space-y-1">
-            <label className="text-sm font-medium">Town *</label>
-            <Input required value={values.town} onChange={e => set('town', e.target.value)} />
+            <label htmlFor="prop-town" className="text-sm font-medium">Town *</label>
+            <Input id="prop-town" required value={values.town} onChange={e => set('town', e.target.value)} />
           </div>
           <div className="space-y-1">
-            <label className="text-sm font-medium">Postcode *</label>
-            <Input required value={values.postcode} onChange={e => set('postcode', e.target.value)} />
+            <label htmlFor="prop-postcode" className="text-sm font-medium">Postcode *</label>
+            <Input id="prop-postcode" required value={values.postcode} onChange={e => set('postcode', e.target.value)} />
           </div>
           <div className="space-y-1">
-            <label className="text-sm font-medium">Property type *</label>
+            <label htmlFor="prop-type" className="text-sm font-medium">Property type *</label>
             <select
+              id="prop-type"
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               value={values.property_type}
               onChange={e => set('property_type', e.target.value)}
@@ -205,8 +206,8 @@ function PropertyForm({ firmId, onSaved, onCancel }: PropertyFormProps) {
             </select>
           </div>
           <div className="space-y-1">
-            <label className="text-sm font-medium">Total units</label>
-            <Input type="number" min="0" value={values.total_units} onChange={e => set('total_units', e.target.value)} />
+            <label htmlFor="prop-units" className="text-sm font-medium">Total units</label>
+            <Input id="prop-units" type="number" min="0" value={values.total_units} onChange={e => set('total_units', e.target.value)} />
           </div>
           <div className="col-span-2 flex items-center gap-2">
             <input

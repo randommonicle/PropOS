@@ -11,6 +11,9 @@ app/.env
 app/.env.local
 app/.env.*.local
 
+# Local credentials file — never commit
+CREDENTIALS.txt
+
 # Supabase local dev (Docker-based local)
 supabase/.temp/
 
@@ -28,3 +31,8 @@ Thumbs.db
 
 # TypeScript
 *.tsbuildinfo
+
+# Playwright
+app/tests/.auth/user.json
+app/playwright-report/
+app/test-results/

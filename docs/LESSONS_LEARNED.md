@@ -33,6 +33,15 @@ Updated at the end of each build phase per Section 6.2.
 
 ---
 
+### Post-phase setup issues resolved (2026-05-07)
+
+- **JWT `role` claim conflict with PostgREST:** The hook originally set `{role}` to the PropOS role name (e.g. 'admin'). PostgREST uses the `role` JWT claim to pick the Postgres database role — setting it to 'admin' (a non-existent Postgres role) caused every REST API call to return HTTP 401. Fixed by using `{user_role}` as the claim name and updating `auth_user_role()` accordingly. Rule: never overwrite `role` in a Supabase JWT hook.
+- **Hook needs SECURITY DEFINER:** Without it, the hook runs as `supabase_auth_admin` and is blocked by RLS on `public.users` (chicken-and-egg: JWT needed to pass RLS, but JWT is what the hook is building). Fixed by adding `SECURITY DEFINER` + `SET search_path = public` to the function.
+- **`supabase_auth_admin` needs table-level grants:** `GRANT EXECUTE ON FUNCTION` alone is not enough. Also needed: `GRANT USAGE ON SCHEMA public` and `GRANT SELECT ON public.users`.
+- **cmd.exe `&&` chaining adds trailing spaces to env vars:** `set DB_URL=value && next` sets DB_URL to `value ` (with trailing space). Always run `set` on separate lines in cmd.exe. PowerShell `$env:` syntax does not have this problem.
+
+---
+
 ## Phase 2 — Compliance & Works (not yet started)
 
 ---
