@@ -68,7 +68,7 @@ PropOS/
 
 ## Database
 
-**16 migrations** covering all 26 tables. Run via:
+**18 migrations** covering all 26 tables, RLS policies, storage security, and infrastructure hardening. Run via:
 
 ```cmd
 set DB_URL=postgresql://postgres:<password>@db.<ref>.supabase.co:5432/postgres
