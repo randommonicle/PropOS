@@ -68,7 +68,7 @@ PropOS/
 
 ## Database
 
-**18 migrations** covering all 26 tables, RLS policies, storage security, and infrastructure hardening. Run via:
+**19 migrations** covering all 26 tables, RLS policies, storage security, infrastructure hardening, and units DELETE policy. Run via:
 
 ```cmd
 set DB_URL=postgresql://postgres:<password>@db.<ref>.supabase.co:5432/postgres
@@ -121,6 +121,7 @@ The dev server must be running (`npm run dev`) or Playwright will start it autom
 | compliance | Page load, RAG summary, tabs, create round-trip |
 | contractors | Page load, sidebar nav, create round-trip |
 | works | Page load, tabs, works order create, S20 create |
+| property_detail | Units CRUD (create, edit, delete+confirm); leaseholders CRUD (create, edit, end, delete+confirm) |
 
 Both runners are active. Run both before declaring any change complete.
 
