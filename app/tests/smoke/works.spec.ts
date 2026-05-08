@@ -3,10 +3,25 @@
  * Verifies: page load, tab navigation, works order create round-trip,
  * Section 20 tab navigation.
  * Hits real Supabase — no mocks.
+ * afterAll cleans up Smoke WO / Smoke S20 records left by this test run.
  */
 import { test, expect } from '@playwright/test'
+import { createClient } from '@supabase/supabase-js'
+
+const supabase = createClient(
+  process.env.VITE_SUPABASE_URL ?? 'https://tmngfuonanizxyffrsjy.supabase.co',
+  process.env.VITE_SUPABASE_ANON_KEY ?? 'sb_publishable_M_cBRZKdJtIunGAUFBhD1g_SYMADNyT',
+)
 
 test.describe('Works page', () => {
+  test.afterAll(async () => {
+    await supabase.auth.signInWithPassword({ email: 'admin@propos.local', password: 'PropOS2026!' })
+    await Promise.all([
+      supabase.from('works_orders').delete().like('description', 'Smoke WO %'),
+      supabase.from('section20_consultations').delete().like('works_description', 'Smoke S20 %'),
+    ])
+  })
+
   test('page loads with correct heading', async ({ page }) => {
     await page.goto('/works')
     await expect(page.getByRole('main').getByRole('heading', { name: 'Works' })).toBeVisible()
