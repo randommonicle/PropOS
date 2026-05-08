@@ -104,13 +104,13 @@ Deno.serve(async (req: Request) => {
   if (action === 'accept') {
     return html(successPage(
       'Works Order Accepted',
-      'Thank you — you have accepted this works order. Your project manager will be in touch shortly to confirm the schedule and access arrangements.',
+      'Thank you &mdash; you have accepted this works order. Your project manager will be in touch shortly to confirm the schedule and access arrangements.',
       true,
     ))
   } else {
     return html(successPage(
       'Works Order Declined',
-      'You have declined this works order. Thank you for letting us know — the project manager will re-assign the job.',
+      'You have declined this works order. Thank you for letting us know &mdash; the project manager will re-assign the job.',
       false,
     ))
   }
