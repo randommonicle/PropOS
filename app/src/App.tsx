@@ -12,6 +12,9 @@ import { DashboardPage } from '@/components/modules/properties/DashboardPage'
 import { PropertiesPage } from '@/components/modules/properties/PropertiesPage'
 import { PropertyDetailPage } from '@/components/modules/properties/PropertyDetailPage'
 import { DocumentsPage } from '@/components/modules/documents/DocumentsPage'
+import { CompliancePage } from '@/components/modules/compliance/CompliancePage'
+import { ContractorsPage } from '@/components/modules/contractors/ContractorsPage'
+import { WorksPage } from '@/components/modules/works/WorksPage'
 
 // Placeholder for modules built in later phases
 function ComingSoon({ name }: { name: string }) {
@@ -38,8 +41,9 @@ export default function App() {
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="properties" element={<PropertiesPage />} />
           <Route path="properties/:id" element={<PropertyDetailPage />} />
-          <Route path="compliance" element={<ComingSoon name="Compliance" />} />
-          <Route path="works" element={<ComingSoon name="Works & Dispatch" />} />
+          <Route path="compliance" element={<CompliancePage />} />
+          <Route path="contractors" element={<ContractorsPage />} />
+          <Route path="works" element={<WorksPage />} />
           <Route path="financial" element={<ComingSoon name="Financial" />} />
           <Route path="documents" element={<DocumentsPage />} />
           <Route path="reports" element={<ComingSoon name="Reports" />} />

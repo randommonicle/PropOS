@@ -7,7 +7,7 @@
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import {
   Building2, FileText, Wrench, ShieldCheck,
-  Wallet, Users, LogOut, LayoutDashboard, FileArchive
+  Wallet, Users, LogOut, LayoutDashboard, FileArchive, HardHat
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui'
@@ -18,6 +18,7 @@ const navItems = [
   { to: '/properties', label: 'Properties', icon: Building2 },
   { to: '/compliance', label: 'Compliance', icon: ShieldCheck },
   { to: '/works', label: 'Works', icon: Wrench },
+  { to: '/contractors', label: 'Contractors', icon: HardHat },
   { to: '/financial', label: 'Financial', icon: Wallet },
   { to: '/documents', label: 'Documents', icon: FileArchive },
   { to: '/reports', label: 'Reports', icon: FileText },

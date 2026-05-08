@@ -2,7 +2,7 @@
 
 Full-stack property management operating system for RICS-regulated managing agents, SME agents, and RMC/RTM self-managed blocks.
 
-**Status:** Phase 1 complete and verified ✓ — Phase 2 (Compliance & Works) next
+**Status:** Phase 2 complete and verified ✓ — Phase 3 (Financial) next
 
 ---
 
@@ -110,7 +110,7 @@ npm run test:smoke:report    # open last HTML report
 
 The dev server must be running (`npm run dev`) or Playwright will start it automatically.
 
-**Current coverage (Phase 1):**
+**Current coverage (Phases 1 & 2):**
 
 | Spec | Tests |
 |------|-------|
@@ -118,6 +118,9 @@ The dev server must be running (`npm run dev`) or Playwright will start it autom
 | dashboard | Firm name, stat cards, no 401s, sidebar nav |
 | properties | List loads, seed data, create property round-trip |
 | documents | Page load, upload button, type filter |
+| compliance | Page load, RAG summary, tabs, create round-trip |
+| contractors | Page load, sidebar nav, create round-trip |
+| works | Page load, tabs, works order create, S20 create |
 
 Both runners are active. Run both before declaring any change complete.
 
@@ -140,7 +143,7 @@ Full decision log: [`docs/DECISIONS.md`](docs/DECISIONS.md)
 | Phase | Status | Deliverables |
 |-------|--------|-------------|
 | 1 — Foundation | ✅ Complete | Schema, auth, CRUD, document vault, dashboard |
-| 2 — Compliance & Works | 🔜 Next | Compliance tracker, insurance, works orders, dispatch engine, Section 20 |
+| 2 — Compliance & Works | ✅ Complete | Compliance tracker (RAG), insurance tracker, contractor register, works orders, dispatch engine (token), Section 20 state machine |
 | 3 — Financial | Planned | Service charge demands, budgets, bank reconciliation |
 | 4 — Portals | Planned | Leaseholder portal, maintenance requests |
 | 5 — BSA Module | Planned | Golden Thread, mandatory occurrences, HRB register |

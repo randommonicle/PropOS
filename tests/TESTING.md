@@ -23,6 +23,9 @@ Auth state saved to `app/tests/.auth/user.json`.
 | `dashboard.spec.ts` | Firm name, stat cards, no 401s, sidebar nav |
 | `properties.spec.ts` | List load, seed data, create property round-trip |
 | `documents.spec.ts` | Page load, upload button, type filter |
+| `compliance.spec.ts` | Page load, RAG summary, tabs, compliance item create round-trip |
+| `contractors.spec.ts` | Page load, sidebar nav, contractor create round-trip |
+| `works.spec.ts` | Page load, tabs, works order create, S20 consultation create |
 
 ---
 
@@ -42,6 +45,9 @@ Python: 3.14.4 · pytest: 9.0.3 · playwright: 1.59.0
 | `test_dashboard.py` | Firm name, stat cards, no 401s, sidebar nav |
 | `test_properties.py` | List load, seed data, create property round-trip |
 | `test_documents.py` | Page load, upload button, type filter |
+| `test_compliance.py` | Page load, RAG summary, tabs, compliance item create round-trip |
+| `test_contractors.py` | Page load, sidebar nav, contractor create round-trip |
+| `test_works.py` | Page load, tabs, works order create, S20 consultation create |
 
 ---
 
@@ -54,4 +60,4 @@ Run both suites after every significant change and before declaring any phase co
 ## Future additions
 
 - **psycopg2 DB integrity tests** — direct Postgres assertions (row counts, FK integrity, RLS verification without going through the UI). Add to `tests/smoke_py/` once psycopg2 is installed.
-- **Phase 2 coverage** — add specs for compliance tracker, works orders, and dispatch engine as each module ships.
+- **Phase 3+ coverage** — add specs for each module as it ships (financial, portals, BSA, etc.).
