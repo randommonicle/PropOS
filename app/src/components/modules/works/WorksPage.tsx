@@ -12,8 +12,8 @@
  *
  * Section 20 state machine (LTA 1985 s.20):
  *   stage1_pending → stage1_issued → stage1_closed
- *     → stage2_issued → stage2_closed → complete
- *   Any stage → dispensation (LTA 1985 s.20ZA)
+ *     → stage2_issued → stage2_closed → awarded → complete
+ *   Any active stage → dispensation (LTA 1985 s.20ZA)
  */
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
@@ -24,11 +24,12 @@ import { Wrench, Plus, Search, Pencil, X, Send, ChevronRight } from 'lucide-reac
 import { cn, formatDate } from '@/lib/utils'
 import type { Database } from '@/types/database'
 
-type WorksOrder = Database['public']['Tables']['works_orders']['Row']
-type Section20 = Database['public']['Tables']['section20_consultations']['Row']
+type WorksOrder     = Database['public']['Tables']['works_orders']['Row']
+type Section20      = Database['public']['Tables']['section20_consultations']['Row']
 type Section20Update = Database['public']['Tables']['section20_consultations']['Update']
-type Contractor = Database['public']['Tables']['contractors']['Row']
-type Property = Database['public']['Tables']['properties']['Row']
+type S20Observation = Database['public']['Tables']['section20_observations']['Row']
+type Contractor     = Database['public']['Tables']['contractors']['Row']
+type Property       = Database['public']['Tables']['properties']['Row']
 
 // ── Status / priority display maps ──────────────────────────────────────────
 const ORDER_STATUS_VARIANT: Record<string, 'secondary' | 'amber' | 'green' | 'red' | 'outline'> = {
@@ -58,23 +59,41 @@ const ORDER_TYPE_LABELS: Record<string, string> = {
 }
 
 const S20_STATUS_LABELS: Record<string, string> = {
-  stage1_pending: 'Stage 1 Pending',
-  stage1_issued: 'Stage 1 Issued',
-  stage1_closed: 'Stage 1 Closed',
-  stage2_issued: 'Stage 2 Issued',
-  stage2_closed: 'Stage 2 Closed',
-  complete: 'Complete',
-  dispensation: 'Dispensation',
+  stage1_pending:  'Stage 1 — Pending',
+  stage1_issued:   'Stage 1 — Notice Issued',
+  stage1_closed:   'Stage 1 — Closed',
+  stage2_issued:   'Stage 2 — Notice Issued',
+  stage2_closed:   'Stage 2 — Closed',
+  awarded:         'Contract Awarded',
+  complete:        'Complete',
+  dispensation:    'Dispensation Applied',
+  withdrawn:       'Withdrawn',
 }
 
 const S20_STATUS_VARIANT: Record<string, 'secondary' | 'amber' | 'green' | 'red' | 'outline'> = {
-  stage1_pending: 'secondary',
-  stage1_issued: 'amber',
-  stage1_closed: 'outline',
-  stage2_issued: 'amber',
-  stage2_closed: 'outline',
-  complete: 'green',
-  dispensation: 'secondary',
+  stage1_pending:  'secondary',
+  stage1_issued:   'amber',
+  stage1_closed:   'outline',
+  stage2_issued:   'amber',
+  stage2_closed:   'outline',
+  awarded:         'green',
+  complete:        'green',
+  dispensation:    'outline',
+  withdrawn:       'red',
+}
+
+/** Active statuses that can be advanced, withdrawn, or have dispensation applied */
+const S20_ACTIVE = new Set(['stage1_pending','stage1_issued','stage1_closed','stage2_issued','stage2_closed','awarded'])
+
+/** Number of days remaining in the statutory 30-day observation window (0 when period has elapsed) */
+function s20ObservationDaysRemaining(c: Section20): number {
+  const noticeDate =
+    c.status === 'stage1_issued' ? c.stage1_notice_date :
+    c.status === 'stage2_issued' ? c.stage2_notice_date : null
+  if (!noticeDate) return 0
+  const closeAfter = new Date(noticeDate)
+  closeAfter.setDate(closeAfter.getDate() + 30)
+  return Math.max(0, Math.ceil((closeAfter.getTime() - Date.now()) / 86_400_000))
 }
 
 const SELECT_CLASS = 'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm'
@@ -155,6 +174,7 @@ export function WorksPage() {
           <Section20Tab
             firmId={firmId}
             properties={properties}
+            contractors={contractors}
             propMap={propMap}
           />
         )}
@@ -656,15 +676,17 @@ function DispatchModal({ firmId, order, contractors, onDispatched, onCancel }: {
 // ════════════════════════════════════════════════════════════════════════════
 // Section 20 Tab
 // ════════════════════════════════════════════════════════════════════════════
-function Section20Tab({ firmId, properties, propMap }: {
+function Section20Tab({ firmId, properties, contractors, propMap }: {
   firmId: string
   properties: Property[]
+  contractors: Contractor[]
   propMap: Map<string, string>
 }) {
   const [consultations, setConsultations] = useState<Section20[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState<Section20 | null>(null)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     if (!firmId) return
@@ -679,22 +701,11 @@ function Section20Tab({ firmId, properties, propMap }: {
 
   useEffect(() => { load() }, [load])
 
-  async function advanceStatus(c: Section20) {
-    const nextStatus = getNextS20Status(c.status)
-    if (!nextStatus) return
-    const updates = buildS20StatusUpdate(c.status, nextStatus)
-    await supabase
-      .from('section20_consultations')
-      .update({ status: nextStatus, ...updates })
-      .eq('id', c.id)
-    load()
-  }
-
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
         <p className="text-sm text-muted-foreground">
-          LTA 1985 s.20 — £250 threshold per leaseholder
+          LTA 1985 s.20 — qualifying works exceeding £250 per leaseholder require consultation
         </p>
         <Button size="sm" onClick={() => { setEditing(null); setShowForm(true) }}>
           <Plus className="h-4 w-4 mr-1" /> New consultation
@@ -705,6 +716,7 @@ function Section20Tab({ firmId, properties, propMap }: {
         <Section20Form
           firmId={firmId}
           properties={properties}
+          contractors={contractors}
           initial={editing}
           onSaved={() => { setShowForm(false); setEditing(null); load() }}
           onCancel={() => { setShowForm(false); setEditing(null) }}
@@ -719,73 +731,403 @@ function Section20Tab({ firmId, properties, propMap }: {
           <p className="text-sm text-muted-foreground">No Section 20 consultations found.</p>
         </div>
       ) : (
-        <div className="space-y-3">
-          {consultations.map(c => {
-            const nextStatus = getNextS20Status(c.status)
-            return (
-              <Card key={c.id} className="hover:shadow-sm transition-shadow">
-                <CardContent className="p-5">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1 flex-wrap">
-                        <span className="font-medium text-sm">{propMap.get(c.property_id) ?? '—'}</span>
-                        <Badge
-                          variant={S20_STATUS_VARIANT[c.status] ?? 'secondary'}
-                          className="text-xs"
-                        >
-                          {S20_STATUS_LABELS[c.status] ?? c.status}
-                        </Badge>
-                        {c.threshold_exceeded && (
-                          <Badge variant="amber" className="text-xs">£250 threshold exceeded</Badge>
-                        )}
-                      </div>
-                      <p className="text-sm text-muted-foreground truncate">{c.works_description}</p>
-                      {c.estimated_cost && (
-                        <p className="text-xs text-muted-foreground mt-1">
-                          Est. cost: £{Number(c.estimated_cost).toLocaleString('en-GB', { minimumFractionDigits: 2 })}
-                        </p>
-                      )}
-                      {/* Stage dates */}
-                      <div className="flex gap-4 mt-2 text-xs text-muted-foreground flex-wrap">
-                        {c.stage1_notice_date && (
-                          <span>Stage 1 issued: {formatDate(c.stage1_notice_date)}</span>
-                        )}
-                        {c.stage1_response_deadline && (
-                          <span>S1 deadline: {formatDate(c.stage1_response_deadline)}</span>
-                        )}
-                        {c.stage2_notice_date && (
-                          <span>Stage 2 issued: {formatDate(c.stage2_notice_date)}</span>
-                        )}
-                        {c.stage2_response_deadline && (
-                          <span>S2 deadline: {formatDate(c.stage2_response_deadline)}</span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      {nextStatus && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => advanceStatus(c)}
-                          className="whitespace-nowrap"
-                        >
-                          <ChevronRight className="h-3.5 w-3.5 mr-1" />
-                          {getNextS20Label(c.status)}
-                        </Button>
-                      )}
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => { setEditing(c); setShowForm(true) }}
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            )
-          })}
+        <div className="space-y-4">
+          {consultations.map(c => (
+            <S20ConsultationCard
+              key={c.id}
+              consultation={c}
+              firmId={firmId}
+              contractors={contractors}
+              propMap={propMap}
+              expanded={expandedId === c.id}
+              onToggleExpand={() => setExpandedId(expandedId === c.id ? null : c.id)}
+              onEdit={() => { setEditing(c); setShowForm(true) }}
+              onRefresh={load}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── S20 Consultation Card ────────────────────────────────────────────────────
+function S20ConsultationCard({ consultation: c, firmId, contractors, propMap, expanded, onToggleExpand, onEdit, onRefresh }: {
+  consultation: Section20
+  firmId: string
+  contractors: Contractor[]
+  propMap: Map<string, string>
+  expanded: boolean
+  onToggleExpand: () => void
+  onEdit: () => void
+  onRefresh: () => void
+}) {
+  const [saving, setSaving] = useState(false)
+  const [nomContractorId, setNomContractorId] = useState(c.nominated_contractor_id ?? '')
+  const [awardContractorId, setAwardContractorId] = useState(c.awarded_contractor_id ?? '')
+  const [dispDecision, setDispDecision] = useState<'granted' | 'refused' | null>(null)
+  const [showWithdrawConfirm, setShowWithdrawConfirm] = useState(false)
+
+  const nextStatus  = getNextS20Status(c.status)
+  const daysLeft    = s20ObservationDaysRemaining(c)
+  const canAdvance  = nextStatus !== null && daysLeft === 0
+  const isActive    = S20_ACTIVE.has(c.status)
+
+  // Sync nomination dirty-check if the parent record refreshes
+  const nomCId = c.nominated_contractor_id ?? ''
+
+  async function advance() {
+    if (!nextStatus || daysLeft > 0) return
+    setSaving(true)
+    const updates = buildS20StatusUpdate(c.status, nextStatus)
+    // For awarded → need selected contractor
+    if (c.status === 'stage2_closed' && !awardContractorId) {
+      setSaving(false); return
+    }
+    const extra: Section20Update = {}
+    if (c.status === 'stage2_closed') extra.awarded_contractor_id = awardContractorId
+    await supabase
+      .from('section20_consultations')
+      .update({ status: nextStatus, ...updates, ...extra })
+      .eq('id', c.id)
+    setSaving(false)
+    onRefresh()
+  }
+
+  async function saveNomination() {
+    setSaving(true)
+    await supabase
+      .from('section20_consultations')
+      .update({ nominated_contractor_id: nomContractorId || null })
+      .eq('id', c.id)
+    setSaving(false)
+    onRefresh()
+  }
+
+  async function markDispensationDecision(granted: boolean) {
+    setSaving(true)
+    await supabase
+      .from('section20_consultations')
+      .update({ status: 'dispensation', dispensation_granted: granted })
+      .eq('id', c.id)
+    setSaving(false)
+    setDispDecision(null)
+    onRefresh()
+  }
+
+  async function withdraw() {
+    setSaving(true)
+    await supabase
+      .from('section20_consultations')
+      .update({ status: 'withdrawn' })
+      .eq('id', c.id)
+    setSaving(false)
+    setShowWithdrawConfirm(false)
+    onRefresh()
+  }
+
+  const contrMap = new Map(contractors.map(ct => [ct.id, ct.company_name]))
+
+  return (
+    <Card className="transition-shadow hover:shadow-sm">
+      <CardContent className="p-5">
+        {/* ── Header row ── */}
+        <div className="flex items-start justify-between gap-4 mb-3">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap mb-1">
+              <span className="font-medium text-sm">{propMap.get(c.property_id) ?? '—'}</span>
+              <Badge variant={S20_STATUS_VARIANT[c.status] ?? 'secondary'} className="text-xs">
+                {S20_STATUS_LABELS[c.status] ?? c.status}
+              </Badge>
+              {c.threshold_exceeded && (
+                <Badge variant="amber" className="text-xs">£250 threshold exceeded</Badge>
+              )}
+              {c.dispensation_applied && c.status !== 'dispensation' && (
+                <Badge variant="outline" className="text-xs">Dispensation applied</Badge>
+              )}
+            </div>
+            <p className="text-sm text-muted-foreground">{c.works_description}</p>
+            {c.estimated_cost != null && (
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Est. cost: £{Number(c.estimated_cost).toLocaleString('en-GB', { minimumFractionDigits: 2 })}
+              </p>
+            )}
+          </div>
+          <div className="flex gap-1 flex-shrink-0">
+            <Button variant="ghost" size="sm" onClick={onEdit} aria-label="Edit consultation">
+              <Pencil className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        </div>
+
+        {/* ── Stage dates timeline ── */}
+        {(c.stage1_notice_date || c.stage2_notice_date) && (
+          <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground mb-3 border-l-2 border-muted pl-3">
+            {c.stage1_notice_date && <span>Stage 1 issued: <strong>{formatDate(c.stage1_notice_date)}</strong></span>}
+            {c.stage1_response_deadline && <span>S1 deadline: <strong>{formatDate(c.stage1_response_deadline)}</strong></span>}
+            {c.stage1_closed_date && <span>S1 closed: <strong>{formatDate(c.stage1_closed_date)}</strong></span>}
+            {c.stage2_notice_date && <span>Stage 2 issued: <strong>{formatDate(c.stage2_notice_date)}</strong></span>}
+            {c.stage2_response_deadline && <span>S2 deadline: <strong>{formatDate(c.stage2_response_deadline)}</strong></span>}
+            {c.stage2_closed_date && <span>S2 closed: <strong>{formatDate(c.stage2_closed_date)}</strong></span>}
+          </div>
+        )}
+
+        {/* ── Observation period countdown ── */}
+        {daysLeft > 0 && (
+          <div className="flex items-center gap-2 rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-800 mb-3">
+            <span className="font-semibold">⏱ {daysLeft} day{daysLeft !== 1 ? 's' : ''} remaining</span>
+            <span className="text-amber-600">in the 30-day statutory observation period — consultation cannot be closed until this elapses.</span>
+          </div>
+        )}
+        {(c.status === 'stage1_issued' || c.status === 'stage2_issued') && daysLeft === 0 && (
+          <div className="flex items-center gap-2 rounded-md bg-green-50 border border-green-200 px-3 py-2 text-sm text-green-800 mb-3">
+            ✓ 30-day observation period has elapsed — you may now close this stage.
+          </div>
+        )}
+
+        {/* ── Dispensation decision (if applied and still active) ── */}
+        {c.dispensation_applied && c.status !== 'dispensation' && c.dispensation_grounds && isActive && (
+          <div className="rounded-md border border-muted bg-muted/30 px-3 py-2 text-sm mb-3">
+            <p className="font-medium mb-1">Dispensation applied — grounds:</p>
+            <p className="text-muted-foreground mb-2">{c.dispensation_grounds}</p>
+            {dispDecision === null ? (
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" onClick={() => setDispDecision('granted')}>Record as Granted</Button>
+                <Button size="sm" variant="outline" onClick={() => setDispDecision('refused')}>Record as Refused</Button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <span className="text-sm">Confirm dispensation was <strong>{dispDecision}</strong>?</span>
+                <Button size="sm" variant="destructive" disabled={saving} onClick={() => markDispensationDecision(dispDecision === 'granted')}>Confirm</Button>
+                <Button size="sm" variant="ghost" onClick={() => setDispDecision(null)}>Cancel</Button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Dispensation result ── */}
+        {c.status === 'dispensation' && (
+          <div className="rounded-md border border-muted bg-muted/30 px-3 py-2 text-sm mb-3">
+            <span className="font-medium">Dispensation: </span>
+            {c.dispensation_granted === true && <span className="text-green-700 font-medium">Granted ✓</span>}
+            {c.dispensation_granted === false && <span className="text-destructive font-medium">Refused — full s.20 process required</span>}
+            {c.dispensation_granted === null && <span className="text-muted-foreground">Decision pending</span>}
+            {c.dispensation_grounds && <p className="text-muted-foreground mt-1">Grounds: {c.dispensation_grounds}</p>}
+          </div>
+        )}
+
+        {/* ── Contractor nomination (stage1_issued / stage1_closed) ── */}
+        {(c.status === 'stage1_issued' || c.status === 'stage1_closed') && contractors.length > 0 && (
+          <div className="flex items-center gap-2 mb-3">
+            <label className="text-xs font-medium whitespace-nowrap text-muted-foreground">Nominated contractor:</label>
+            <select
+              className={cn(SELECT_CLASS, 'h-8 text-xs flex-1 max-w-xs')}
+              value={nomContractorId}
+              onChange={e => setNomContractorId(e.target.value)}
+            >
+              <option value="">None nominated by leaseholders</option>
+              {contractors.map(ct => (
+                <option key={ct.id} value={ct.id}>{ct.company_name}</option>
+              ))}
+            </select>
+            {nomContractorId !== nomCId && (
+              <Button size="sm" variant="outline" onClick={saveNomination} disabled={saving}>Save</Button>
+            )}
+          </div>
+        )}
+        {c.nominated_contractor_id && c.status !== 'stage1_issued' && c.status !== 'stage1_closed' && (
+          <p className="text-xs text-muted-foreground mb-3">
+            Nominated contractor: <strong>{contrMap.get(c.nominated_contractor_id) ?? '—'}</strong>
+          </p>
+        )}
+
+        {/* ── Contractor award (stage2_closed) ── */}
+        {c.status === 'stage2_closed' && contractors.length > 0 && (
+          <div className="flex items-center gap-2 mb-3">
+            <label className="text-xs font-medium whitespace-nowrap text-muted-foreground">Award contract to: *</label>
+            <select
+              className={cn(SELECT_CLASS, 'h-8 text-xs flex-1 max-w-xs')}
+              value={awardContractorId}
+              onChange={e => setAwardContractorId(e.target.value)}
+            >
+              <option value="">Select contractor…</option>
+              {contractors.map(ct => (
+                <option key={ct.id} value={ct.id}>{ct.company_name}</option>
+              ))}
+            </select>
+          </div>
+        )}
+        {c.awarded_contractor_id && (c.status === 'awarded' || c.status === 'complete') && (
+          <p className="text-xs text-muted-foreground mb-3">
+            Awarded contractor: <strong>{contrMap.get(c.awarded_contractor_id) ?? '—'}</strong>
+          </p>
+        )}
+
+        {/* ── Withdraw confirmation ── */}
+        {showWithdrawConfirm && (
+          <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm mb-3">
+            <span>Withdraw this consultation? This cannot be undone.</span>
+            <Button size="sm" variant="destructive" disabled={saving} onClick={withdraw}>Confirm withdraw</Button>
+            <Button size="sm" variant="ghost" onClick={() => setShowWithdrawConfirm(false)}>Cancel</Button>
+          </div>
+        )}
+
+        {/* ── Actions row ── */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Main advance button */}
+          {nextStatus && (
+            <Button
+              size="sm"
+              disabled={!canAdvance || saving || (c.status === 'stage2_closed' && !awardContractorId)}
+              onClick={advance}
+              className="whitespace-nowrap"
+              title={daysLeft > 0 ? `${daysLeft} days remaining in observation period` : undefined}
+            >
+              <ChevronRight className="h-3.5 w-3.5 mr-1" />
+              {getNextS20Label(c.status)}
+              {daysLeft > 0 && ` (${daysLeft}d)`}
+            </Button>
+          )}
+
+          {/* Observations toggle */}
+          {(c.status === 'stage1_issued' || c.status === 'stage2_issued' || expanded) && (
+            <Button size="sm" variant="outline" onClick={onToggleExpand}>
+              {expanded ? 'Hide observations' : 'Observations'}
+            </Button>
+          )}
+
+          {/* Dispensation apply (if not already in terminal state) */}
+          {isActive && !c.dispensation_applied && c.status !== 'dispensation' && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-muted-foreground text-xs"
+              onClick={onEdit}
+              title="Edit consultation to apply for dispensation (s.20ZA)"
+            >
+              Apply dispensation
+            </Button>
+          )}
+
+          {/* Withdraw */}
+          {isActive && !showWithdrawConfirm && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-muted-foreground text-xs ml-auto"
+              onClick={() => setShowWithdrawConfirm(true)}
+            >
+              Withdraw
+            </Button>
+          )}
+        </div>
+
+        {/* ── Observations panel ── */}
+        {expanded && (
+          <div className="mt-4 border-t pt-4">
+            <S20ObservationsPanel
+              firmId={firmId}
+              consultationId={c.id}
+              stage={c.status === 'stage2_issued' ? 'stage2' : 'stage1'}
+            />
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// ── S20 Observations Panel ───────────────────────────────────────────────────
+function S20ObservationsPanel({ firmId, consultationId, stage }: {
+  firmId: string
+  consultationId: string
+  stage: 'stage1' | 'stage2'
+}) {
+  const [observations, setObservations] = useState<S20Observation[]>([])
+  const [loading, setLoading] = useState(true)
+  const [showAdd, setShowAdd] = useState(false)
+  const [form, setForm] = useState({ leaseholder_name: '', received_date: new Date().toISOString().split('T')[0], content: '', nominated_contractor: '' })
+  const [saving, setSaving] = useState(false)
+
+  const load = useCallback(async () => {
+    const { data } = await supabase
+      .from('section20_observations')
+      .select('*')
+      .eq('consultation_id', consultationId)
+      .order('received_date', { ascending: true })
+    setObservations(data ?? [])
+    setLoading(false)
+  }, [consultationId])
+
+  useEffect(() => { load() }, [load])
+
+  async function addObservation(e: React.FormEvent) {
+    e.preventDefault()
+    setSaving(true)
+    await supabase.from('section20_observations').insert({
+      firm_id: firmId,
+      consultation_id: consultationId,
+      stage,
+      received_date: form.received_date,
+      content: form.content,
+      nominated_contractor: form.nominated_contractor || null,
+    })
+    setSaving(false)
+    setShowAdd(false)
+    setForm({ leaseholder_name: '', received_date: new Date().toISOString().split('T')[0], content: '', nominated_contractor: '' })
+    load()
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <h4 className="text-sm font-medium">Leaseholder Observations — {stage === 'stage1' ? 'Stage 1' : 'Stage 2'}</h4>
+        <Button size="sm" variant="outline" onClick={() => setShowAdd(!showAdd)}>
+          <Plus className="h-3.5 w-3.5 mr-1" /> Add observation
+        </Button>
+      </div>
+
+      {showAdd && (
+        <form onSubmit={addObservation} className="rounded-md border bg-muted/20 p-4 mb-4 grid grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <label className="text-xs font-medium">Received date *</label>
+            <Input type="date" required value={form.received_date} onChange={e => setForm(f => ({ ...f, received_date: e.target.value }))} />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium">Nominated contractor (if named)</label>
+            <Input placeholder="Contractor name, if any" value={form.nominated_contractor} onChange={e => setForm(f => ({ ...f, nominated_contractor: e.target.value }))} />
+          </div>
+          <div className="col-span-2 space-y-1">
+            <label className="text-xs font-medium">Observation text *</label>
+            <Input required placeholder="Record the leaseholder's observation…" value={form.content} onChange={e => setForm(f => ({ ...f, content: e.target.value }))} />
+          </div>
+          <div className="col-span-2 flex gap-2 justify-end">
+            <Button type="button" size="sm" variant="outline" onClick={() => setShowAdd(false)}>Cancel</Button>
+            <Button type="submit" size="sm" disabled={saving}>{saving ? 'Saving…' : 'Save observation'}</Button>
+          </div>
+        </form>
+      )}
+
+      {loading ? (
+        <p className="text-xs text-muted-foreground">Loading…</p>
+      ) : observations.length === 0 ? (
+        <p className="text-xs text-muted-foreground py-2">No observations recorded yet.</p>
+      ) : (
+        <div className="space-y-2">
+          {observations.map(obs => (
+            <div key={obs.id} className="rounded-md border bg-background p-3 text-sm">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
+                <span>Received: <strong>{formatDate(obs.received_date)}</strong></span>
+                {obs.nominated_contractor && (
+                  <Badge variant="outline" className="text-xs">Nominates: {obs.nominated_contractor}</Badge>
+                )}
+              </div>
+              <p className="text-sm">{obs.content}</p>
+              {obs.response_text && (
+                <p className="text-xs text-muted-foreground mt-1 border-t pt-1">Response: {obs.response_text}</p>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -796,10 +1138,11 @@ function Section20Tab({ firmId, properties, propMap }: {
 function getNextS20Status(current: string): string | null {
   const map: Record<string, string> = {
     stage1_pending: 'stage1_issued',
-    stage1_issued: 'stage1_closed',
-    stage1_closed: 'stage2_issued',
-    stage2_issued: 'stage2_closed',
-    stage2_closed: 'complete',
+    stage1_issued:  'stage1_closed',
+    stage1_closed:  'stage2_issued',
+    stage2_issued:  'stage2_closed',
+    stage2_closed:  'awarded',
+    awarded:        'complete',
   }
   return map[current] ?? null
 }
@@ -807,10 +1150,11 @@ function getNextS20Status(current: string): string | null {
 function getNextS20Label(current: string): string {
   const map: Record<string, string> = {
     stage1_pending: 'Issue Stage 1 Notice',
-    stage1_issued: 'Close Stage 1',
-    stage1_closed: 'Issue Stage 2 Notice',
-    stage2_issued: 'Close Stage 2',
-    stage2_closed: 'Mark Complete',
+    stage1_issued:  'Close Stage 1',
+    stage1_closed:  'Issue Stage 2 Notice',
+    stage2_issued:  'Close Stage 2',
+    stage2_closed:  'Award Contract',
+    awarded:        'Mark Complete',
   }
   return map[current] ?? 'Advance'
 }
@@ -831,13 +1175,18 @@ function buildS20StatusUpdate(from: string, to: string): Section20Update {
   if (from === 'stage2_issued' && to === 'stage2_closed') {
     return { stage2_closed_date: today }
   }
+  // awarded_contractor_id is set separately in S20ConsultationCard.advance()
+  if (from === 'stage2_closed' && to === 'awarded') {
+    return {}
+  }
   return {}
 }
 
 // ── Section 20 Form ──────────────────────────────────────────────────────────
-function Section20Form({ firmId, properties, initial, onSaved, onCancel }: {
+function Section20Form({ firmId, properties, contractors: _contractors, initial, onSaved, onCancel }: {
   firmId: string
   properties: Property[]
+  contractors: Contractor[]
   initial: Section20 | null
   onSaved: () => void
   onCancel: () => void
