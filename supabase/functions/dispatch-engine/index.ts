@@ -82,7 +82,7 @@ Deno.serve(async (req: Request) => {
     // Send via Resend
     const resend = new Resend(Deno.env.get('RESEND_API_KEY')!)
     const { error: sendErr } = await resend.emails.send({
-      from: 'PropOS Works <works@propos.app>',
+      from: 'PropOS Works <works@proposdigital.uk>',
       to: contractor.email,
       subject: `Works order — ${wo?.description ?? 'New dispatch'}`,
       html: buildEmail({
