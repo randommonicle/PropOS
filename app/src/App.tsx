@@ -15,6 +15,7 @@ import { DocumentsPage } from '@/components/modules/documents/DocumentsPage'
 import { CompliancePage } from '@/components/modules/compliance/CompliancePage'
 import { ContractorsPage } from '@/components/modules/contractors/ContractorsPage'
 import { WorksPage } from '@/components/modules/works/WorksPage'
+import { ContractorResponsePage } from '@/components/modules/works/ContractorResponsePage'
 
 // Placeholder for modules built in later phases
 function ComingSoon({ name }: { name: string }) {
@@ -30,6 +31,8 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        {/* Public route — no auth required; contractors land here after clicking dispatch email links */}
+        <Route path="/contractor-response" element={<ContractorResponsePage />} />
         <Route
           element={
             <AuthGuard>
