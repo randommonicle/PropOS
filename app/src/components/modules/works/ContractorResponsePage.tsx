@@ -3,9 +3,13 @@
  * @description Public page — shown to contractors after clicking Accept/Decline
  * in a dispatch email. No authentication required.
  *
+ * Colours follow the visitor's OS dark/light preference via matchMedia —
+ * independent of whatever theme the PropOS app is set to.
+ *
  * Query params (set by the contractor-response Edge Function redirect):
  *   status — accepted | declined | already_responded | expired | invalid | error
  */
+import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 type Status = 'accepted' | 'declined' | 'already_responded' | 'expired' | 'invalid' | 'error'
@@ -54,15 +58,35 @@ const CONFIG: Record<Status, {
   },
 }
 
+function useDarkMode(): boolean {
+  const [dark, setDark] = useState(() =>
+    typeof window !== 'undefined'
+      ? window.matchMedia('(prefers-color-scheme: dark)').matches
+      : false
+  )
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const handler = (e: MediaQueryListEvent) => setDark(e.matches)
+    mq.addEventListener('change', handler)
+    return () => mq.removeEventListener('change', handler)
+  }, [])
+  return dark
+}
+
 export function ContractorResponsePage() {
   const [params] = useSearchParams()
   const status = (params.get('status') ?? 'invalid') as Status
-  const cfg = CONFIG[status] ?? CONFIG.invalid
+  const cfg    = CONFIG[status] ?? CONFIG.invalid
+  const dark   = useDarkMode()
+
+  const colours = dark
+    ? { page: '#0f172a', card: '#1e293b', border: '#334155', title: '#f1f5f9', body: '#94a3b8', rule: '#334155', footer: '#64748b' }
+    : { page: '#f4f4f5', card: '#ffffff',  border: '#e4e4e7', title: '#111827', body: '#6b7280', rule: '#f1f5f9',  footer: '#94a3b8' }
 
   return (
     <div style={{
       fontFamily: 'Arial, Helvetica, sans-serif',
-      background: '#f4f4f5',
+      background: colours.page,
       minHeight: '100vh',
       display: 'flex',
       alignItems: 'center',
@@ -70,9 +94,9 @@ export function ContractorResponsePage() {
       padding: '48px 16px',
     }}>
       <div style={{
-        background: '#ffffff',
+        background: colours.card,
         borderRadius: 10,
-        border: '1px solid #e4e4e7',
+        border: `1px solid ${colours.border}`,
         padding: '48px 40px',
         maxWidth: 480,
         width: '100%',
@@ -95,17 +119,17 @@ export function ContractorResponsePage() {
         </div>
 
         {/* Title */}
-        <h1 style={{ margin: '0 0 14px', fontSize: 22, color: '#111827', fontWeight: 700 }}>
+        <h1 style={{ margin: '0 0 14px', fontSize: 22, color: colours.title, fontWeight: 700 }}>
           {cfg.title}
         </h1>
 
         {/* Message */}
-        <p style={{ margin: 0, fontSize: 15, color: '#6b7280', lineHeight: 1.7 }}>
+        <p style={{ margin: 0, fontSize: 15, color: colours.body, lineHeight: 1.7 }}>
           {cfg.message}
         </p>
 
-        <hr style={{ border: 'none', borderTop: '1px solid #f1f5f9', margin: '32px 0 20px' }} />
-        <p style={{ margin: 0, fontSize: 12, color: '#94a3b8' }}>
+        <hr style={{ border: 'none', borderTop: `1px solid ${colours.rule}`, margin: '32px 0 20px' }} />
+        <p style={{ margin: 0, fontSize: 12, color: colours.footer }}>
           PropOS &middot; Property Management Platform
         </p>
       </div>
