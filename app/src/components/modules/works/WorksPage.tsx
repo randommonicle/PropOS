@@ -594,6 +594,7 @@ function DispatchModal({ firmId, order, contractors, onDispatched, onCancel }: {
               id="disp-deadline"
               type="date"
               value={deadlineDate}
+              min={new Date().toISOString().split('T')[0]}
               onChange={e => setDeadlineDate(e.target.value)}
             />
           </div>

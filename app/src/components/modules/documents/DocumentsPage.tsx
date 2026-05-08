@@ -30,6 +30,7 @@ export function DocumentsPage() {
   const [typeFilter, setTypeFilter] = useState('all')
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -64,6 +65,16 @@ export function DocumentsPage() {
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file || !firmContext) return
+
+    setUploadError(null)
+
+    // 25 MB client-side guard
+    if (file.size > 26_214_400) {
+      setUploadError('File exceeds the 25 MB limit.')
+      if (fileRef.current) fileRef.current.value = ''
+      return
+    }
+
     setUploading(true)
 
     const path = `${firmContext.firmId}/${Date.now()}_${file.name}`
@@ -72,8 +83,9 @@ export function DocumentsPage() {
       .upload(path, file)
 
     if (storageError) {
-      alert('Upload failed: ' + storageError.message)
+      setUploadError('Upload failed. Please try again.')
       setUploading(false)
+      if (fileRef.current) fileRef.current.value = ''
       return
     }
 
@@ -87,7 +99,7 @@ export function DocumentsPage() {
     })
 
     if (dbError) {
-      alert('Failed to record document: ' + dbError.message)
+      setUploadError('File stored but record failed. Contact support.')
     } else {
       loadDocuments(firmContext.firmId)
     }
@@ -99,7 +111,7 @@ export function DocumentsPage() {
     const { data } = await supabase.storage
       .from(STORAGE_BUCKETS.DOCUMENTS)
       .createSignedUrl(doc.storage_path, 60)
-    if (data?.signedUrl) window.open(data.signedUrl, '_blank')
+    if (data?.signedUrl) window.open(data.signedUrl, '_blank', 'noopener,noreferrer')
   }
 
   return (
@@ -109,10 +121,19 @@ export function DocumentsPage() {
           <Upload className="h-4 w-4 mr-1" />
           {uploading ? 'Uploading…' : 'Upload'}
         </Button>
-        <input ref={fileRef} type="file" className="hidden" onChange={handleUpload} />
+        <input
+          ref={fileRef}
+          type="file"
+          className="hidden"
+          accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.jpg,.jpeg,.png,.gif,.webp,.zip"
+          onChange={handleUpload}
+        />
       </PageHeader>
 
       <div className="p-8">
+        {uploadError && (
+          <p className="text-sm text-destructive mb-4 px-1">{uploadError}</p>
+        )}
         {/* Filters */}
         <div className="flex gap-4 mb-6">
           <div className="relative flex-1 max-w-sm">
