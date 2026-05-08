@@ -3,8 +3,16 @@
  * @description Smoke tests for the property detail page — units and leaseholders CRUD.
  * Covers: unit create, edit, delete (with confirmation); leaseholder create, edit,
  * mark-as-ended, delete (with confirmation); FK constraint error surfacing.
+ *
+ * afterAll hooks clean up in FK-safe order: leaseholders first, then units.
  */
 import { test, expect } from '@playwright/test'
+import { createClient } from '@supabase/supabase-js'
+
+const supabase = createClient(
+  process.env.VITE_SUPABASE_URL ?? 'https://tmngfuonanizxyffrsjy.supabase.co',
+  process.env.VITE_SUPABASE_ANON_KEY ?? 'sb_publishable_M_cBRZKdJtIunGAUFBhD1g_SYMADNyT',
+)
 
 // ── Helper: navigate to the first property detail page ────────────────────────
 async function goToFirstProperty(page: Parameters<typeof test>[1]) {
@@ -19,6 +27,11 @@ async function goToFirstProperty(page: Parameters<typeof test>[1]) {
 // Units
 // ════════════════════════════════════════════════════════════════════════════
 test.describe('Property detail — units', () => {
+  test.afterAll(async () => {
+    await supabase.auth.signInWithPassword({ email: 'admin@propos.local', password: 'PropOS2026!' })
+    // All unit-test smoke refs start with 'Smoke U'
+    await supabase.from('units').delete().like('unit_ref', 'Smoke U%')
+  })
 
   test('units section heading and add button are visible', async ({ page }) => {
     await goToFirstProperty(page)
@@ -108,6 +121,22 @@ test.describe('Property detail — units', () => {
 // Leaseholders
 // ════════════════════════════════════════════════════════════════════════════
 test.describe('Property detail — leaseholders', () => {
+  test.afterAll(async () => {
+    await supabase.auth.signInWithPassword({ email: 'admin@propos.local', password: 'PropOS2026!' })
+
+    // Delete leaseholders BEFORE units (FK constraint)
+    await Promise.all([
+      supabase.from('leaseholders').delete().like('full_name', 'Smoke LH %'),
+      supabase.from('leaseholders').delete().like('full_name', 'LH Edit%'),
+      supabase.from('leaseholders').delete().like('full_name', 'LHPerson%'),
+    ])
+
+    // Now safe to delete the units created by leaseholder tests
+    await Promise.all([
+      supabase.from('units').delete().like('unit_ref', 'Smoke LH%'),
+      supabase.from('units').delete().like('unit_ref', 'SmokeUnit%'),
+    ])
+  })
 
   test('leaseholders section heading and add button are visible', async ({ page }) => {
     await goToFirstProperty(page)

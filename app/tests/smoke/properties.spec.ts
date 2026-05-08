@@ -1,12 +1,24 @@
 /**
  * Smoke tests — Properties module
  * Verifies: list loads, seed properties present, create new property.
+ * afterAll cleans up Smoke Test Block records left by this test run.
  */
 import { test, expect } from '@playwright/test'
+import { createClient } from '@supabase/supabase-js'
+
+const supabase = createClient(
+  process.env.VITE_SUPABASE_URL ?? 'https://tmngfuonanizxyffrsjy.supabase.co',
+  process.env.VITE_SUPABASE_ANON_KEY ?? 'sb_publishable_M_cBRZKdJtIunGAUFBhD1g_SYMADNyT',
+)
 
 test.describe('Properties', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/properties')
+  })
+
+  test.afterAll(async () => {
+    await supabase.auth.signInWithPassword({ email: 'admin@propos.local', password: 'PropOS2026!' })
+    await supabase.from('properties').delete().like('name', 'Smoke Test Block %')
   })
 
   test('properties list loads', async ({ page }) => {
