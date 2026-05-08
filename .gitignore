@@ -36,3 +36,4 @@ Thumbs.db
 app/tests/.auth/user.json
 app/playwright-report/
 app/test-results/
+tests/smoke_py/.auth/user.json

@@ -1,58 +1,57 @@
 # PropOS — Testing Strategy
 
-## Current: Playwright (Node.js) — headless Chromium E2E smoke tests
+Both test runners hit real Supabase. No mocks. Both must pass before any phase is declared complete.
 
-Located in `app/tests/smoke/`. Run from the `app/` directory.
+---
+
+## Runner 1: Playwright (Node.js) — `app/tests/smoke/`
 
 ```cmd
 cd app
-npm run test:smoke           # headless (standard)
-npm run test:smoke:headed    # with visible browser (debugging)
+npm run test:smoke           # headless (standard — run after every change)
+npm run test:smoke:headed    # visible browser (debugging)
 npm run test:smoke:ui        # interactive Playwright UI
 npm run test:smoke:report    # open last HTML report
 ```
 
-First run installs Playwright browsers automatically.
-The dev server starts automatically if not already running (reuses existing).
-Auth state is saved to `tests/.auth/user.json` and reused across tests.
+Dev server starts automatically if not running (reuses existing at localhost:5173).
+Auth state saved to `app/tests/.auth/user.json`.
 
-### Smoke test coverage
-
-| File | What it tests |
-|------|--------------|
-| `auth.setup.ts` | Login flow, JWT hook, redirect to dashboard |
-| `dashboard.spec.ts` | Stat cards, firm name, no 401s, sidebar nav |
-| `properties.spec.ts` | List load, seed data, create property |
-| `documents.spec.ts` | Page load, upload UI, filter controls |
-
-### When to run
-
-Run after every significant change to app source. Claude will run this suite
-before declaring any Phase 2+ task complete.
+| File | Tests |
+|------|-------|
+| `auth.setup.ts` | Login flow, JWT hook, dashboard redirect |
+| `dashboard.spec.ts` | Firm name, stat cards, no 401s, sidebar nav |
+| `properties.spec.ts` | List load, seed data, create property round-trip |
+| `documents.spec.ts` | Page load, upload button, type filter |
 
 ---
 
-## Future: pytest + Playwright (Python) — FLAGGED FOR INSTALL
-
-**Status:** Python not yet installed on this machine.
-
-**Why add it:** Python/pytest gives a useful fallback and allows sharing test
-infrastructure with data-heavy scripts (migration validation, seed checking,
-DB integrity assertions via psycopg2). Some QA tooling integrates better with
-Python than Node.
-
-**To set up when Python is installed:**
+## Runner 2: pytest + Playwright (Python) — `tests/smoke_py/`
 
 ```cmd
-pip install pytest pytest-playwright
-playwright install chromium
+python -m pytest tests/smoke_py/ -v
 ```
 
-Then mirror the Node smoke tests in `tests/smoke_py/`:
-- `conftest.py` — shared fixtures (base_url, auth state)
-- `test_auth.py`
-- `test_dashboard.py`
-- `test_properties.py`
-- `test_documents.py`
+Dev server must be running first: `cd app && npm run dev`
 
-Both Node and Python suites can run in parallel pointing at the same dev server.
+Python: 3.14.4 · pytest: 9.0.3 · playwright: 1.59.0
+
+| File | Tests |
+|------|-------|
+| `test_auth.py` | Authenticated session, unauthenticated redirect, sign out |
+| `test_dashboard.py` | Firm name, stat cards, no 401s, sidebar nav |
+| `test_properties.py` | List load, seed data, create property round-trip |
+| `test_documents.py` | Page load, upload button, type filter |
+
+---
+
+## When to run both
+
+Run both suites after every significant change and before declaring any phase complete. Node catches front-end regressions fast (auto-starts server). Python acts as independent verification and is the foundation for future DB integrity tests via psycopg2.
+
+---
+
+## Future additions
+
+- **psycopg2 DB integrity tests** — direct Postgres assertions (row counts, FK integrity, RLS verification without going through the UI). Add to `tests/smoke_py/` once psycopg2 is installed.
+- **Phase 2 coverage** — add specs for compliance tracker, works orders, and dispatch engine as each module ships.

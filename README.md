@@ -16,7 +16,7 @@ Full-stack property management operating system for RICS-regulated managing agen
 | Email | Resend |
 | AI | Claude API (claude-sonnet-4-6) |
 | Hosting | Vercel Pro |
-| Testing | Playwright (Node.js, headless Chromium) — see [Testing](#testing) |
+| Testing | Playwright Node.js + pytest/Playwright Python — see [Testing](#testing) |
 
 ---
 
@@ -119,7 +119,7 @@ The dev server must be running (`npm run dev`) or Playwright will start it autom
 | properties | List loads, seed data, create property round-trip |
 | documents | Page load, upload button, type filter |
 
-**⚑ Python/pytest flag:** Python is not yet installed on the dev machine. When installed, a parallel `pytest + playwright` suite will be added in `tests/smoke_py/`. See `tests/TESTING.md` for setup instructions. Node is the primary runner until then.
+Both runners are active. Run both before declaring any change complete.
 
 ---
 
