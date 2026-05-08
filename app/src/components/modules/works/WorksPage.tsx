@@ -3,10 +3,12 @@
  * @description Works orders, dispatch engine, and Section 20 consultation tracker.
  * Tabs: Works Orders | Section 20
  *
- * Dispatch engine (Phase 2 PoC):
- *   - Creates dispatch_log entry with a generated token
+ * Dispatch engine:
+ *   - Creates dispatch_log entry with a signed token
  *   - Sets works_order.status = 'dispatching'
- *   - Email notification via Resend is a separate Edge Function (deferred to Phase 2b)
+ *   - Invokes dispatch-engine Edge Function → sends accept/decline email via Resend
+ *   - contractor-response Edge Function handles token accept/decline (public endpoint)
+ *   - dispatch_timeout_check() SQL function + pg_cron resets timed-out dispatches to draft
  *
  * Section 20 state machine (LTA 1985 s.20):
  *   stage1_pending → stage1_issued → stage1_closed
@@ -178,7 +180,8 @@ function WorksOrdersTab({ firmId, properties, contractors, propMap, contrMap }: 
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState<WorksOrder | null>(null)
-  const [dispatching, setDispatching] = useState<WorksOrder | null>(null)
+  const [dispatching,    setDispatching]    = useState<WorksOrder | null>(null)
+  const [emailWarning,   setEmailWarning]   = useState<string | null>(null)
 
   const load = useCallback(async () => {
     if (!firmId) return
@@ -256,12 +259,34 @@ function WorksOrdersTab({ firmId, properties, contractors, propMap, contrMap }: 
         />
       )}
 
+      {/* Email warning banner — shown when dispatch-engine Edge Function fails */}
+      {emailWarning && (
+        <div className="mb-4 flex items-center justify-between rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <span>⚠ {emailWarning}</span>
+          <button
+            className="ml-4 text-amber-600 hover:text-amber-800 font-medium"
+            onClick={() => setEmailWarning(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {dispatching && (
         <DispatchModal
           firmId={firmId}
           order={dispatching}
           contractors={contractors}
-          onDispatched={() => { setDispatching(null); load() }}
+          onDispatched={(emailSent) => {
+            setDispatching(null)
+            load()
+            if (!emailSent) {
+              setEmailWarning(
+                'Dispatch saved, but email notification failed — the contractor was not emailed. ' +
+                'Check that the contractor has a valid email address on file.'
+              )
+            }
+          }}
           onCancel={() => setDispatching(null)}
         />
       )}
@@ -499,7 +524,8 @@ function DispatchModal({ firmId, order, contractors, onDispatched, onCancel }: {
   firmId: string
   order: WorksOrder
   contractors: Contractor[]
-  onDispatched: () => void
+  /** emailSent = true if Resend call succeeded; false means dispatch is saved but no email was sent */
+  onDispatched: (emailSent: boolean) => void
   onCancel: () => void
 }) {
   const [contractorId, setContractorId] = useState(order.contractor_id ?? '')
@@ -526,18 +552,23 @@ function DispatchModal({ firmId, order, contractors, onDispatched, onCancel }: {
       .select('id', { count: 'exact', head: true })
       .eq('works_order_id', order.id)
 
-    const { error: logErr } = await supabase.from('dispatch_log').insert({
-      firm_id: firmId,
-      works_order_id: order.id,
-      contractor_id: contractorId,
-      sequence_position: (prevCount ?? 0) + 1,
-      response_deadline: responseDeadline,
-      token,
-      token_expires_at: tokenExpiry,
-      notified_via: 'email',
-    })
+    // Insert dispatch log and capture the generated ID for the email Edge Function
+    const { data: logData, error: logErr } = await supabase
+      .from('dispatch_log')
+      .insert({
+        firm_id: firmId,
+        works_order_id: order.id,
+        contractor_id: contractorId,
+        sequence_position: (prevCount ?? 0) + 1,
+        response_deadline: responseDeadline,
+        token,
+        token_expires_at: tokenExpiry,
+        notified_via: 'email',
+      })
+      .select('id')
+      .single()
 
-    if (logErr) { setError(logErr.message); setSaving(false); return }
+    if (logErr || !logData) { setError(logErr?.message ?? 'Failed to create dispatch record'); setSaving(false); return }
 
     const { error: orderErr } = await supabase
       .from('works_orders')
@@ -550,10 +581,17 @@ function DispatchModal({ firmId, order, contractors, onDispatched, onCancel }: {
 
     if (orderErr) { setError(orderErr.message); setSaving(false); return }
 
-    // TODO (Phase 2b): invoke Edge Function `dispatch-works-order` to send Resend email
-    // The token is stored — the Edge Function will compose the accept/decline URL.
+    // Invoke dispatch-engine Edge Function to send the accept/decline email via Resend.
+    // Email failure does NOT roll back the dispatch — the record is already saved.
+    const { error: emailErr } = await supabase.functions.invoke('dispatch-engine', {
+      body: { dispatch_log_id: logData.id },
+    })
 
-    onDispatched()
+    if (emailErr) {
+      console.warn('dispatch-engine email error:', emailErr.message)
+    }
+
+    onDispatched(!emailErr)
   }
 
   return (
@@ -599,8 +637,8 @@ function DispatchModal({ firmId, order, contractors, onDispatched, onCancel }: {
             />
           </div>
           <p className="text-xs text-muted-foreground bg-muted/40 rounded px-3 py-2">
-            <strong>Note:</strong> A dispatch record with accept/decline token will be created.
-            Email notification via Resend will be enabled in the next release.
+            <strong>Note:</strong> An accept/decline email will be sent to the contractor&apos;s
+            registered email address. The contractor must have a valid email on file.
           </p>
           {error && <p className="text-sm text-destructive">{error}</p>}
           <div className="flex gap-2 justify-end">

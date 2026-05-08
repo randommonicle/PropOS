@@ -1,0 +1,3 @@
+# contractor-response is a public endpoint — contractors click links from emails
+# without being authenticated PropOS users. JWT verification must be disabled.
+verify_jwt = false
