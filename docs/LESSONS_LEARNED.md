@@ -68,3 +68,27 @@ Updated at the end of each build phase per Section 6.2.
 - Write a `scripts/deploy-functions.bat` (or Makefile target) from the very first Edge Function deployment — never rely on remembering flags.
 
 ---
+
+## Phase 3 — Financial (in progress; 1a–1d complete 2026-05-09)
+
+### What worked well
+
+- **State-the-plan-first gate.** On every non-trivial commit (1c, 1d), the operator asked for the file list + test list + UX rules before any code was written. This caught two scope ambiguities cheaply (whether one-active-SCA-per-year was in scope; what the s.21B guard's exact trigger conditions should be) and aligned the test list with the implementation in advance. Cost: one extra round-trip per commit. Benefit: zero rework so far.
+- **Audit-refactor pattern as a pre-push gate.** Three review agents (code-reuse, code-quality, efficiency) launched in parallel via the `simplify` skill caught 8 real issues across the new tabs and specs — including one Rules-of-Hooks bug (`useMemo` after a loading early-return) that TypeScript's `tsc -b --noEmit` did not flag and that only surfaced as a blank page in the browser console. Worth running before every push that touches non-trivial code.
+- **Statutory citations in error messages.** Surfacing "LTA 1985 s.21B", "RICS Client Money Rule 4.7", "TPI Code §5", and "LTA s.20B" verbatim in user-facing rejection messages turned out to also be the cleanest way to write the smoke assertions (regex against the rule number). Two-for-one: the compliance traceability and the test anchoring share the same string.
+- **Worktree-local Playwright config (`playwright.worktree.config.ts`).** A 16-line shim that overrides `baseURL` to a non-5173 port and disables `webServer` reuse. Solves the worktree-vs-main-repo dev-server collision permanently; reusable for every future worktree commit.
+- **Self-seeding smoke specs.** The dev seed has properties + units but no leaseholders. Rather than introduce a global fixture, the demands smoke seeds its own current leaseholder via `notes='Smoke DEM%'` and unwinds in `afterAll` (FK-safe order: transactions → demands → leaseholders). Self-contained, no inter-spec ordering dependencies.
+
+### What didn't work / friction points
+
+- **`tsc -b --noEmit` does not catch Rules-of-Hooks violations.** A `useMemo` placed after a conditional early return passed typecheck cleanly but rendered as a blank page in the browser. Only a Playwright run with `page.on('console')` capture surfaced the React warning. Lesson: typecheck is necessary but not sufficient — every UI change still needs a real browser smoke before pushing.
+- **`TaskStop` on `npm run dev` does not kill the underlying Vite child.** Stale Vite processes accumulated on 5174/5175/5176 across multiple test runs in the same worktree. Detection via `Get-NetTCPConnection -LocalPort N -State Listen`; cleanup via `Stop-Process -Id <pid> -Force`. Pattern to keep in scratch.
+- **`reuseExistingServer: true` in Playwright is dangerous across worktrees.** The base config silently reused the main repo's 5173 dev server, meaning the first commit-1c smoke run was actually testing main-repo code. The failures looked like "tab missing" — only port-ownership investigation surfaced the real cause. The `playwright.worktree.config.ts` shim is now mandatory for worktree work.
+- **`DEMAND_TYPE_OPTIONS` label refactor changed `Service charge` → `Service Charge`.** Switching from hardcoded labels to `slugToTitle(value)` title-cases every word, which broke a smoke test that did `selectOption('Service charge')`. Caught by the smoke run, not typecheck. Lesson: any label change in a `<select>` needs grep across the smoke specs.
+
+### What would be done differently
+
+- Capture browser-console errors during smoke runs (e.g. via a Playwright reporter or a global `page.on('pageerror')`) so Rules-of-Hooks and similar runtime warnings break the build instead of being silent. Add to test infrastructure backlog.
+- Establish the worktree-config + 5174 pattern from commit 1 of the next phase, not after a debugging session.
+
+---
