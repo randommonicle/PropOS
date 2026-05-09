@@ -7,6 +7,23 @@
 
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[]
 
+/**
+ * Snapshot of a proposed transaction stored on `payment_authorisations.proposed`
+ * (JSONB) when a payment is awaiting authorisation. On authorise, the
+ * application uses this snapshot to insert the actual `transactions` row.
+ * Inner shape is application-validated; the DB CHECK constraint only verifies
+ * presence (not structure). See migration 00022 + DECISIONS 2026-05-10.
+ */
+export interface ProposedTransaction {
+  bank_account_id:  string
+  amount:           number
+  transaction_date: string
+  description:      string
+  payee_payer:      string | null
+  reference:        string | null
+  demand_id:        string | null
+}
+
 export interface Database {
   public: {
     Tables: {
@@ -490,7 +507,7 @@ export interface Database {
         Row: {
           id: string
           firm_id: string
-          transaction_id: string
+          transaction_id: string | null
           requested_by: string
           requested_at: string
           authorised_by: string | null
@@ -500,12 +517,13 @@ export interface Database {
           rejection_reason: string | null
           status: string
           authority_limit: number | null
+          proposed: ProposedTransaction | null
           created_at: string
         }
         Insert: {
           id?: string
           firm_id: string
-          transaction_id: string
+          transaction_id?: string | null
           requested_by: string
           requested_at?: string
           authorised_by?: string | null
@@ -515,6 +533,7 @@ export interface Database {
           rejection_reason?: string | null
           status?: string
           authority_limit?: number | null
+          proposed?: ProposedTransaction | null
           created_at?: string
         }
         Update: Partial<Omit<Database['public']['Tables']['payment_authorisations']['Insert'], 'id'>>

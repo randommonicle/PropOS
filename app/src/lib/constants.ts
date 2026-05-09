@@ -122,6 +122,14 @@ export type TransactionType = (typeof TRANSACTION_TYPES)[number]
 export const DEMAND_OPEN_STATUSES: readonly DemandStatus[] =
   ['issued', 'part_paid', 'overdue'] as const
 
+// Payment authorisation statuses — matches status column on payment_authorisations.
+export const PAYMENT_AUTH_STATUSES = [
+  'pending',
+  'authorised',
+  'rejected',
+] as const
+export type PaymentAuthStatus = (typeof PAYMENT_AUTH_STATUSES)[number]
+
 // Section 20 consultation statuses (state machine)
 export const SECTION_20_STATUSES = [
   'stage1_pending',

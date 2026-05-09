@@ -294,6 +294,70 @@ Out of scope until **at least Phase 6** (Reporting), possibly later. Recorded he
 
 ---
 
+## 2026-05-10 — Payment Authorisations: dual-auth request flow with self-auth guard
+
+**Context:** Phase 3 commit 1f introduces `PaymentAuthorisationsTab` as the eighth per-property tab and replaces 1e's interim dual-auth **block** with a proper **request → review → approve** flow. RICS Client Money Rules require segregation of duties — the user who initiates a payment above the dual-auth threshold must NOT be the user who authorises it. The deployed `payment_authorisations` schema (00005:170-185) made this hard: `transaction_id NOT NULL` meant the transaction had to exist before the authorisation request, but a transaction created upfront would falsify `bank_accounts.current_balance` (via the `sync_bank_account_balance` trigger) while sitting in pending state.
+
+**Decision:**
+
+1. **Schema migration 00022.** `payment_authorisations.transaction_id` becomes nullable. A new `proposed JSONB` column stores a snapshot of the proposed transaction `{ bank_account_id, amount, transaction_date, description, payee_payer, reference, demand_id }`. A CHECK constraint `(transaction_id IS NOT NULL) OR (proposed IS NOT NULL)` enforces that every PA row references either a real transaction (legacy / post-authorisation) or carries a proposed snapshot (pending). Inner shape of the JSONB is application-validated; the DB does not enforce structure. JSONB chosen over discrete columns: future-extensible (e.g. for inter-account-transfer paired rows) without further migrations, less migration churn, and the snapshot is a write-once capture rather than a queryable record.
+2. **Request flow.** TransactionsTab no longer rejects payments above threshold. Instead the form inserts a `payment_authorisations` row in `pending` with the proposed snapshot. The transaction itself is NOT created. A banner in TransactionsTab confirms the request was created and points at the new tab.
+3. **Self-authorisation guard (UI, with deferred server backstop).** The Authorise action rejects with an inline error citing RICS / TPI segregation when `requested_by === currentUserId`. The button is also rendered disabled in this case. **Self-rejection IS permitted** and is exposed as a separate "Cancel request" action — a requester can withdraw their own pending request without breaking the rule. Server-side enforcement deferred to the financial-rules Edge Function in a later commit.
+4. **Role guard.** Only `admin` or `director` may authorise or reject (mirrors 1d.1's `isFinanceRole`). Property Managers can only request and cancel their own.
+5. **Authorise mechanics.** Two writes happen client-side: (a) INSERT a `transactions` row from the proposed snapshot (signed amount preserved, all proposed fields copied verbatim, `created_by` set to the original requester for the audit chain); (b) UPDATE the PA row with `transaction_id = <new>`, `status='authorised'`, `authorised_by=currentUserId`, `authorised_at=now()`. The balance trigger updates `bank_accounts.current_balance` automatically once (a) lands. Failure between (a) and (b) leaves the system in a recoverable state — the transaction exists but the PA row is still `pending`; refreshing surfaces it for re-authorise to retry the link. Atomic transactional wrap deferred to the Edge Function.
+6. **Demand auto-status on authorise.** If the proposed payment carries `demand_id`, the same `applyDemandReceiptStatus` helper used in 1e runs after authorise. Forward-only (never reverts paid). Note: the helper only counts `transaction_type='receipt'` rows, so an authorised payment-type transaction with a `demand_id` does not move demand status — this is the correct behaviour because paying a demand is a receipt event, not a payment event. The smoke spec verifies this.
+7. **Reject with reason.** Per-row Reject button → modal with required reason input → updates PA row with `status='rejected'`, `rejected_by`, `rejected_at`, `rejection_reason`. Visible to the requester. No transaction created.
+8. **Cancel by requester.** Same database state as a rejection but reason is auto-set to "Cancelled by requester" and the modal omits the reason input (cancellations are by the requester themselves; no asymmetric explanation is needed).
+9. **Immutability.** `authorised` and `rejected` PAs are immutable from this UI. The action buttons are absent on those rows. A row footer shows the resolution timestamp and reason (for rejections).
+10. **Tab placement: per-property.** Eighth tab on `PropertyDetailPage`. The PA list is filtered to PAs whose proposed (or linked transaction's) `bank_account_id` belongs to this property. A firm-wide "All pending authorisations" dashboard for admins is a deferred enhancement.
+11. **`authority_limit` column not surfaced.** The schema's per-PA authority limit is left unused for the PoC — enforcement is by role only. Recorded as future work for when a firm has multiple director-level users with differentiated authority limits (linked to the role-taxonomy expansion noted below).
+12. **Out of scope (deferred).**
+    - **Atomic transactional wrap** of authorise. Edge Function.
+    - **Email / in-app notifications** to authorisers when a request is created. Phase 5 portal work.
+    - **Firm-wide pending-authorisations dashboard** for admins.
+    - **Audit log entries** for authorise / reject events. Phase 5+.
+    - **Inter-account-transfer paired authorisation** — the `inter_account_transfer` type still isn't surfaced in TransactionsTab; whichever commit introduces it will need to handle the paired-row flow through the auth pipeline too.
+    - **Closure / RICS-designation dual-auth** — 1g (separate commit). The 1d.1 closure role gate stays in place until 1g lands. 1g will require either extending `payment_authorisations` further with a generic `subject_type/subject_id` discriminator OR adding a sibling `critical_action_authorisations` table. Design call deferred to the 1g plan.
+
+**Rationale:** The JSONB-snapshot pattern is the simplest way to honour the existing balance-trigger contract: a pending payment never enters the transactions table, so the trigger never falsifies the balance. Stamping `created_by` on the eventual transaction with the original requester (not the authoriser) keeps the audit trail honest — the person who originated the spend is recorded, while the person who authorised it is recorded on the PA row. The two-write authorise flow without atomicity is acceptable because failure mode is recoverable (no money moves; the PA stays pending; retry is safe). The self-rejection-but-not-self-authorisation asymmetry matches how RICS / TPI describe the rule: the second signer must be different, but a requester withdrawing their own request is not a control failure.
+
+---
+
+## 2026-05-10 — Per-property invoice spend cap (forward-looking requirement)
+
+**Context:** Property managers should not be able to authorise contractor invoice payments above an agreed per-property limit without a director's permission. The per-property limit defaults to whatever is agreed in the management contract at setup but must be editable later — a property's risk profile can change (e.g. major works year, an RMC asking for tighter controls).
+
+**Decision (recorded as a forward-looking constraint; no code in this commit):**
+
+When invoices CRUD is built (Phase 3 successor commit, exact placement TBD), the workflow must support:
+
+1. **Per-property invoice spend cap setting.** A new column on `properties` (e.g. `invoice_approval_threshold NUMERIC(14,2) NULL`) or a per-property settings row. NULL means "no cap; use the firm-default fallback." The default at property setup is read from the management contract — recorded as the contract's "agreed PM authority limit" value at onboarding.
+2. **PM-facing approval workflow.** When a PM tries to mark an invoice as approved AND the invoice amount exceeds the property's cap, the action is BLOCKED at the UI with a message: "This invoice exceeds the per-property approval cap (£X.XX agreed in the management contract). Contact a director for permission. Once granted, ask the director to approve via the Director Approvals queue."
+3. **Director-approval queue.** Reuses (or extends) the Critical-Action Authorisations infrastructure landing in 1g. A director sees pending invoice-over-cap approvals; on grant, the invoice approval flag flips and the PM can now process it. On deny, reason captured.
+4. **Editable per property.** The cap is editable on the property-edit form (or a Settings tab on PropertyDetailPage). Edits to the cap are themselves audit-trailed; raising the cap on a property where significant spend is happening should leave a record.
+5. **Default at setup.** When a property is added to PropOS via the onboarding flow, the cap is pre-populated from the firm's contract template (or, in the absence of a template, from an admin-set firm default). This makes the contract-encoded limit the starting point rather than something the PM has to remember to set.
+
+**Rationale:** This closes a control gap that exists today — there is no automated enforcement of the contract's PM authority limit, only the social pressure of "ask the director first." Making it a hard UI gate aligns the system with RICS / TPI expectations on segregation of duties and removes the "I forgot to ask" failure mode. Recording it now as a forward-looking constraint means the invoices schema and UI work, when they land, will design for this from the start rather than retrofitting.
+
+---
+
+## 2026-05-10 — Payment authorisation role taxonomy (future extension)
+
+**Context:** 1d.1 and 1f both gate critical actions on `admin` or `director` roles via `isFinanceRole`. This is right for the PoC but too coarse for a real firm. In production, a firm may want a dedicated "approver" role — a user whose only purpose is to authorise secondary payment requests, with no other PropOS access — and may want to restrict the `director` ability to authorise to specific named individuals (partners) rather than every director.
+
+**Decision (recorded as a forward-looking constraint; no code in this commit):**
+
+When the role taxonomy is expanded — likely at a phase boundary so seed data, JWT hook, and RLS policies can move together — the expansion should:
+
+1. **Introduce a `payment_approver` (or similar) role.** Distinct from `director`. Members of this role have NO read/write access to operational data (properties, units, leaseholders, demands, contractors, etc.) — they only see the Payment Authorisations queue. RLS policies will need a new helper (e.g. `is_payment_approver()`) and the queue-access logic will branch.
+2. **Allow a firm-level "authorised approvers" allow-list per bank account.** Some firms designate specific partners as approvers for specific accounts (e.g. one partner approves for the major-works account, another for the service-charge accounts). This is firm-policy-driven and probably modelled as a `bank_account_approvers` join table linking `bank_accounts` to `users` with a role hint.
+3. **Use the existing `authority_limit` column on `payment_authorisations`.** A pending PA records the requester's proposed amount; an approver's effective limit is checked at authorise time. If their limit is below the proposed amount, the action is blocked and a higher-authority approver (or co-approval) is required.
+4. **Preserve the self-auth guard regardless of role.** Even a dedicated approver cannot authorise their own request — the rule is per-action, not per-role.
+
+**Rationale:** The current interim — `admin` or `director` only — is a reasonable PoC default but loses fidelity to how firms actually structure their controls. A regulated firm typically has a written list of authorised signatories per client account, with limits per signatory. PropOS will eventually need to mirror that. Recording it now means the `payment_authorisations` schema (and the 1g work that builds on it) leaves room for the allow-list and limit-check fields rather than baking in an "any director" assumption.
+
+---
+
 ## 2026-05-07 — pgAudit enablement approach
 
 **Context:** Section 4 requires pgAudit to be enabled before any data migration. The Supabase hosted project does not allow direct superuser SQL for extension creation on the free tier in some cases.

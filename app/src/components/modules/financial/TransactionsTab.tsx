@@ -21,12 +21,14 @@
  *   2. `bank_accounts.current_balance` is NEVER written from this UI. The
  *      `sync_bank_account_balance` trigger (00005:144-165) maintains it on
  *      every transactions INSERT / UPDATE / DELETE.
- *   3. Dual-auth gate (interim — full flow lands in commit 1f): a `payment`
- *      against an account with `requires_dual_auth=true` AND amount exceeding
- *      `dual_auth_threshold` is BLOCKED with a message pointing at 1f. No
- *      transaction is created. The block preserves the audit chain — no
- *      payments above threshold can be created without the second signer
- *      once 1f's Critical-Action Authorisations workflow is in place.
+ *   3. Dual-auth gate (commit 1f live): a `payment` against an account with
+ *      `requires_dual_auth=true` AND amount exceeding `dual_auth_threshold`
+ *      no longer saves a transaction directly. Instead the form inserts a
+ *      `payment_authorisations` row (status=pending) with the proposed
+ *      transaction as a JSONB snapshot. A second user (admin or director, not
+ *      the requester) authorises via the Payment authorisations tab; on
+ *      authorise the transaction is created from the snapshot and the
+ *      payment_authorisations row is linked. See PaymentAuthorisationsTab.
  *   4. Reconciled lock: `reconciled=true` rows open with all fields disabled
  *      and surface a regulatory note. The only path to undo a reconciliation
  *      is the bank reconciliation workflow (deferred to its own commit).
@@ -89,8 +91,10 @@ const STATEMENT_IMPORT_LOCK_TOOLTIP =
   'audit chain. It cannot be edited or deleted from the UI. Adjustments must be ' +
   'made via a corresponding journal transaction so the audit chain is preserved.'
 
-const DUAL_AUTH_BLOCK_TOOLTIP_PREFIX =
-  'This payment requires dual authorisation'
+const DUAL_AUTH_REQUEST_CONFIRMATION =
+  'Payment authorisation request created. An admin or director (not the ' +
+  'requester) must authorise it before the transaction is recorded. View ' +
+  'and authorise under the Payment authorisations tab.'
 
 export function TransactionsTab({
   firmId,
@@ -115,6 +119,7 @@ export function TransactionsTab({
   const [editing,     setEditing]     = useState<Transaction | null>(null)
   const [deletingId,  setDeletingId]  = useState<string | null>(null)
   const [deleteErr,   setDeleteErr]   = useState<string | null>(null)
+  const [requestNotice, setRequestNotice] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     const [txnRes, accRes, demRes, unitsRes, lhRes] = await Promise.all([
@@ -232,9 +237,23 @@ export function TransactionsTab({
           leaseholderMap={leaseholderMap}
           initial={editing}
           defaultAccountId={accountFilter || undefined}
-          onSaved={() => { setShowForm(false); setEditing(null); load() }}
+          onSaved={({ notice } = {}) => {
+            setShowForm(false); setEditing(null)
+            if (notice) setRequestNotice(notice)
+            load()
+          }}
           onCancel={() => { setShowForm(false); setEditing(null) }}
         />
+      )}
+
+      {requestNotice && (
+        <div className="mb-3 flex items-start gap-2 text-sm border border-amber-300 bg-amber-50 text-amber-900 rounded-md px-3 py-2">
+          <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+          <span className="flex-1" data-testid="dual-auth-request-notice">{requestNotice}</span>
+          <button onClick={() => setRequestNotice(null)} aria-label="Dismiss notice">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
       )}
 
       {deleteErr && (
@@ -406,7 +425,7 @@ function TransactionForm({
   leaseholderMap: Map<string, string>
   initial: Transaction | null
   defaultAccountId?: string
-  onSaved: () => void
+  onSaved: (result?: { notice?: string }) => void
   onCancel: () => void
 }) {
   const initialType = (initial?.transaction_type as TransactionType | undefined) ?? 'receipt'
@@ -468,22 +487,18 @@ function TransactionForm({
     } else if (values.transaction_type === 'journal') {
       if (values.amount_p === 0) return 'Journal amount cannot be zero.'
     }
-
-    // Dual-auth gate (interim — full second-signer flow lands in commit 1f).
-    if (values.transaction_type === 'payment') {
-      const acc = selectedAccount()
-      const thresholdP = acc?.dual_auth_threshold != null
-        ? poundsToP(Number(acc.dual_auth_threshold))
-        : 0
-      if (acc?.requires_dual_auth && (values.amount_p ?? 0) > thresholdP) {
-        return (
-          `${DUAL_AUTH_BLOCK_TOOLTIP_PREFIX} (threshold ${formatPounds(Number(acc.dual_auth_threshold ?? 0))}). ` +
-          'Use the Payment Authorisations workflow (Phase 3 commit 1f, deferred). ' +
-          'In the interim, payments above threshold cannot be created from this UI.'
-        )
-      }
-    }
     return null
+  }
+
+  /** Whether this payment must be routed through the authorisation request flow. */
+  function requiresDualAuth(): boolean {
+    if (values.transaction_type !== 'payment') return false
+    const acc = selectedAccount()
+    if (!acc?.requires_dual_auth) return false
+    const thresholdP = acc.dual_auth_threshold != null
+      ? poundsToP(Number(acc.dual_auth_threshold))
+      : 0
+    return (values.amount_p ?? 0) > thresholdP
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -500,6 +515,35 @@ function TransactionForm({
       values.transaction_type === 'payment' ? -Math.abs(enteredP)
       : values.transaction_type === 'receipt' ? Math.abs(enteredP)
       : enteredP // journal: as entered (allowNegative)
+    const signedAmount = pToPounds(signedP)
+
+    // Dual-auth: payment over threshold on a dual-auth account routes through
+    // the authorisation request flow instead of inserting a transaction.
+    if (!initial && requiresDualAuth()) {
+      const proposed = {
+        bank_account_id:  values.bank_account_id,
+        amount:           signedAmount,
+        transaction_date: values.transaction_date,
+        description:      values.description.trim(),
+        payee_payer:      values.payee_payer || null,
+        reference:        values.reference || null,
+        demand_id:        values.demand_id || null,
+      }
+      if (!userId) {
+        setError('Cannot create authorisation request — user session missing.')
+        setSaving(false)
+        return
+      }
+      const { error: paErr } = await supabase.from('payment_authorisations').insert({
+        firm_id:      firmId,
+        requested_by: userId,
+        status:       'pending',
+        proposed,
+      })
+      if (paErr) { setError(paErr.message); setSaving(false); return }
+      onSaved({ notice: DUAL_AUTH_REQUEST_CONFIRMATION })
+      return
+    }
 
     const payload = {
       firm_id:          firmId,
@@ -507,7 +551,7 @@ function TransactionForm({
       bank_account_id:  values.bank_account_id,
       transaction_type: values.transaction_type,
       transaction_date: values.transaction_date,
-      amount:           pToPounds(signedP),
+      amount:           signedAmount,
       description:      values.description.trim(),
       payee_payer:      values.payee_payer || null,
       reference:        values.reference || null,

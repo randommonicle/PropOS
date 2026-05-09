@@ -205,30 +205,10 @@ test.describe('Property detail — transactions', () => {
     expect(refreshed?.status).toBe('paid')
   })
 
-  test('dual-auth gate — payment over threshold blocked with 1f message', async ({ page }) => {
-    // Seed a bank account with requires_dual_auth=true and threshold=£100.
-    const { prop, account } = await seedScenario({ dualAuth: { threshold: 100 } })
-    const description = `${TXN_PREFIX} Blocked ${Date.now()}`
-
-    await page.goto(`/properties/${prop.id}?tab=transactions`)
-    await page.getByRole('button', { name: 'Add transaction' }).click()
-    await page.getByLabel('Bank account *').selectOption(account.id)
-    await page.getByLabel('Type *').selectOption('Payment')
-    await page.getByLabel('Amount *').fill('500.00')
-    await page.getByLabel('Description *').fill(description)
-    await page.getByRole('button', { name: 'Save transaction' }).click()
-
-    // Form remains open; error references the 1f workflow.
-    await expect(page.getByText(/dual authorisation/i)).toBeVisible()
-    await expect(page.getByText(/Phase 3 commit 1f/i)).toBeVisible()
-    await expect(page.getByRole('heading', { name: 'New transaction' })).toBeVisible()
-
-    // Confirm no transaction was inserted.
-    const { count } = await supabase
-      .from('transactions').select('*', { count: 'exact', head: true })
-      .eq('description', description)
-    expect(count ?? 0).toBe(0)
-  })
+  // The 1e dual-auth "block" test was removed when 1f introduced the proper
+  // request flow. Coverage for the new behaviour (payment over threshold
+  // creates a pending payment_authorisation row, no transaction inserted)
+  // lives in financial-payment-authorisations.spec.ts.
 
   test('reconciled lock — opening a reconciled txn locks all fields', async ({ page }) => {
     const { prop, account } = await seedScenario()

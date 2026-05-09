@@ -36,7 +36,10 @@ import {
 import { ChevronLeft, Plus, Pencil, Trash2, X, AlertTriangle } from 'lucide-react'
 import { cn, formatDate, todayISODate } from '@/lib/utils'
 import { formatPounds } from '@/lib/money'
-import { BankAccountsTab, ServiceChargeAccountsTab, DemandsTab, TransactionsTab } from '@/components/modules/financial'
+import {
+  BankAccountsTab, ServiceChargeAccountsTab, DemandsTab, TransactionsTab,
+  PaymentAuthorisationsTab,
+} from '@/components/modules/financial'
 import type { Database } from '@/types/database'
 
 type Property    = Database['public']['Tables']['properties']['Row']
@@ -47,7 +50,7 @@ type Leaseholder = Database['public']['Tables']['leaseholders']['Row']
 const SELECT_CLASS = 'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm'
 
 /** Tab identifiers — also used as the `?tab=` search-param values for deep linking. */
-const TAB_VALUES = ['overview', 'units', 'leaseholders', 'bank-accounts', 'service-charge-accounts', 'demands', 'transactions'] as const
+const TAB_VALUES = ['overview', 'units', 'leaseholders', 'bank-accounts', 'service-charge-accounts', 'demands', 'transactions', 'payment-authorisations'] as const
 type TabValue = typeof TAB_VALUES[number]
 const DEFAULT_TAB: TabValue = 'overview'
 
@@ -190,6 +193,7 @@ export function PropertyDetailPage() {
             <TabsTrigger value="service-charge-accounts">Service charge accounts</TabsTrigger>
             <TabsTrigger value="demands">Demands</TabsTrigger>
             <TabsTrigger value="transactions">Transactions</TabsTrigger>
+            <TabsTrigger value="payment-authorisations">Payment authorisations</TabsTrigger>
           </TabsList>
 
           {/* ── Overview tab ─────────────────────────────────────────────── */}
@@ -527,6 +531,11 @@ export function PropertyDetailPage() {
           {/* ── Transactions tab ─────────────────────────────────────────── */}
           <TabsContent value="transactions" className="space-y-8">
             <TransactionsTab firmId={firmContext!.firmId} propertyId={property.id} />
+          </TabsContent>
+
+          {/* ── Payment authorisations tab ───────────────────────────────── */}
+          <TabsContent value="payment-authorisations" className="space-y-8">
+            <PaymentAuthorisationsTab firmId={firmContext!.firmId} propertyId={property.id} />
           </TabsContent>
         </Tabs>
       </div>
