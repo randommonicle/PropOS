@@ -36,7 +36,7 @@ import {
 import { ChevronLeft, Plus, Pencil, Trash2, X, AlertTriangle } from 'lucide-react'
 import { cn, formatDate } from '@/lib/utils'
 import { formatPounds } from '@/lib/money'
-import { BankAccountsTab, ServiceChargeAccountsTab } from '@/components/modules/financial'
+import { BankAccountsTab, ServiceChargeAccountsTab, DemandsTab } from '@/components/modules/financial'
 import type { Database } from '@/types/database'
 
 type Property    = Database['public']['Tables']['properties']['Row']
@@ -47,7 +47,7 @@ type Leaseholder = Database['public']['Tables']['leaseholders']['Row']
 const SELECT_CLASS = 'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm'
 
 /** Tab identifiers — also used as the `?tab=` search-param values for deep linking. */
-const TAB_VALUES = ['overview', 'units', 'leaseholders', 'bank-accounts', 'service-charge-accounts'] as const
+const TAB_VALUES = ['overview', 'units', 'leaseholders', 'bank-accounts', 'service-charge-accounts', 'demands'] as const
 type TabValue = typeof TAB_VALUES[number]
 const DEFAULT_TAB: TabValue = 'overview'
 
@@ -188,6 +188,7 @@ export function PropertyDetailPage() {
             <TabsTrigger value="leaseholders">Leaseholders</TabsTrigger>
             <TabsTrigger value="bank-accounts">Bank accounts</TabsTrigger>
             <TabsTrigger value="service-charge-accounts">Service charge accounts</TabsTrigger>
+            <TabsTrigger value="demands">Demands</TabsTrigger>
           </TabsList>
 
           {/* ── Overview tab ─────────────────────────────────────────────── */}
@@ -515,6 +516,11 @@ export function PropertyDetailPage() {
           {/* ── Service charge accounts tab ──────────────────────────────── */}
           <TabsContent value="service-charge-accounts" className="space-y-8">
             <ServiceChargeAccountsTab firmId={firmContext!.firmId} propertyId={property.id} />
+          </TabsContent>
+
+          {/* ── Demands tab ──────────────────────────────────────────────── */}
+          <TabsContent value="demands" className="space-y-8">
+            <DemandsTab firmId={firmContext!.firmId} propertyId={property.id} />
           </TabsContent>
         </Tabs>
       </div>

@@ -181,6 +181,35 @@ UX commitments for the Phase 6 work, recorded here so 1b doesn't accidentally pr
 
 ---
 
+## 2026-05-09 — Demands: LTA s.21B client guard, status state machine, paid lock, delete policy
+
+**Context:** Phase 3 commit 1d introduces `DemandsTab` as the sixth per-property tab. The `demands` schema (00005:78-104) carries two pieces of statutory metadata that the UI must respect: `s21b_attached` (LTA 1985 s.21B summary, required before a demand becomes legally enforceable) and `issued_date` (the LTA s.20B 18-month rule clock starts here). The schema comment notes that `s21b_attached MUST be true before status is 'issued'` and that the rule is enforced by the `financial-rules` Edge Function. That Edge Function does not yet exist; the UI guard in 1d is the only enforcement, supplemented by the admin/PM-only RLS policy at 00012:139+.
+
+**Decision:**
+
+1. **Status state machine.** `draft → issued → (part_paid → paid | overdue | disputed | withdrawn)`. The Edit form exposes all seven status values. The hard rule is **paid is terminal**: once stored status is `paid`, the form locks unit, leaseholder, demand type, amount, all dates, status, and the s21b_attached checkbox; only `notes` is editable. Withdrawn from `draft` is permitted without s.21B because no demand was issued; withdrawing an already-issued demand keeps its existing `s21b_attached=true`.
+2. **LTA 1985 s.21B client guard.** The form rejects the save if EITHER condition holds AND `s21b_attached` is false:
+   - `issued_date` is set, or
+   - `status` ∈ {`issued`, `part_paid`, `paid`, `overdue`, `disputed`}.
+
+   The rejection message names LTA 1985 s.21B explicitly and tells the PM to either tick the checkbox or revert status to `draft` / `withdrawn`. The mirror server-side enforcement in the financial-rules Edge Function is deferred and will provide defence-in-depth for non-UI writers (imports, future API consumers).
+3. **Auto-stamp issued_date on transition draft → issued.** When the form transitions `status` from anything other than `issued` to `issued` and `issued_date` is empty, the save sets `issued_date = today` (en-CA `YYYY-MM-DD` slice). The PM may override before save. Re-issuing an already-issued demand preserves the original date.
+4. **Auto-stamp leaseholder picker filtering.** The leaseholder select is disabled until a unit is chosen, and is filtered to leaseholders attached to the selected unit AND `is_current = true`. This prevents a PM from accidentally raising a demand against an ended tenant. If the unit is changed after a leaseholder has been picked, the leaseholder field clears.
+5. **Delete policy.** Hard-delete is permitted ONLY when both:
+   - `status = 'draft'` (UI guard before the network call), and
+   - no `transactions` row references the demand (Postgres FK + 23503 surfacing in the UI).
+
+   The rejection message names RICS Client Money Rule 4.7, TPI Code §5, and LTA s.20B's audit chain. This mirrors the bank-accounts (1b) and SCA (1c) deletion policies.
+6. **Out of scope for 1d (deliberate).**
+   - **PDF demand generation** — `document_id` stays `null` and is not surfaced as an editable field. The PDF generation worker is a later Phase 3 commit.
+   - **LTA s.20B 18-month banding warning** — when an `issued_date` is set for expenditure incurred more than 18 months earlier, the demand becomes legally unrecoverable. Surfacing this as a UI warning requires demand-history context across the property and is deferred until the ledger / reconciliation work has loaded that history. Recorded here so a future commit doesn't accidentally treat the absence as approval.
+   - **Bulk demand generation per accounting period** — separate ledger commit; not built in 1d.
+   - **Portal visibility toggle** — Phase 5 (leaseholder portal) work.
+
+**Rationale:** s.21B is the bright-line statutory requirement that turns a draft demand into an enforceable one. Letting a PM mark a demand as `issued` without ticking the s.21B box is the kind of compliance failure that surfaces only at FTT (First-tier Tribunal) when the demand is challenged — by which point the demand cycle has already shipped to leaseholders. A client-side reject at save is the cheapest, most legible place to catch it. The paid lock matches the SCA finalised lock so the audit-retention story is consistent across financial entities. The leaseholder picker filtering closes a small but real failure mode where a PM picks a unit and then accidentally selects a leaseholder from a different unit (the `unit_id` and `leaseholder_id` columns are independent NOT NULL FKs in the schema; nothing at the DB layer enforces consistency between them).
+
+---
+
 ## 2026-05-07 — pgAudit enablement approach
 
 **Context:** Section 4 requires pgAudit to be enabled before any data migration. The Supabase hosted project does not allow direct superuser SQL for extension creation on the free tier in some cases.

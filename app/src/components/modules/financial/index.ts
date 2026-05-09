@@ -5,3 +5,4 @@
  */
 export { BankAccountsTab } from './BankAccountsTab'
 export { ServiceChargeAccountsTab } from './ServiceChargeAccountsTab'
+export { DemandsTab } from './DemandsTab'
