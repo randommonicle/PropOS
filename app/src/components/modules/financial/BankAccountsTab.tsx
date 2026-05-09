@@ -22,13 +22,15 @@
  */
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
+import { useAuthStore } from '@/stores/authStore'
 import {
   Card, CardContent, Button, Badge, Input,
 } from '@/components/ui'
 import { MoneyInput } from '@/components/shared/MoneyInput'
 import { Plus, Pencil, Trash2, X, AlertTriangle, Lock } from 'lucide-react'
-import { cn, formatDate } from '@/lib/utils'
+import { cn, formatDate, todayISODate } from '@/lib/utils'
 import { formatPounds, poundsToP, pToPounds } from '@/lib/money'
+import { isFinanceRole } from '@/lib/constants'
 import type { Database } from '@/types/database'
 
 type BankAccount = Database['public']['Tables']['bank_accounts']['Row']
@@ -48,6 +50,11 @@ const CURRENT_BALANCE_TOOLTIP =
   'Trigger-maintained on reconciliation completion (spec §5.6). The current balance ' +
   'updates automatically when transactions are reconciled and cannot be edited directly.'
 
+const FINANCE_ROLE_TOOLTIP =
+  'Closure and deletion are restricted to admin and director roles. Property ' +
+  'Managers cannot mark a bank account as closed or delete one. Full ' +
+  'dual-authorisation workflow ships in commit 1f (DECISIONS 2026-05-09).'
+
 export function BankAccountsTab({
   firmId,
   propertyId,
@@ -55,6 +62,9 @@ export function BankAccountsTab({
   firmId: string
   propertyId: string
 }) {
+  const role = useAuthStore(s => s.firmContext?.role ?? null)
+  const canManageClosure = isFinanceRole(role)
+
   const [accounts, setAccounts] = useState<BankAccount[]>([])
   const [loading,  setLoading]  = useState(true)
 
@@ -77,6 +87,15 @@ export function BankAccountsTab({
 
   async function handleDelete(account: BankAccount) {
     setDeleteErr(null)
+
+    // Defence in depth: the Delete button is disabled for non-finance roles, but
+    // we re-check here in case the disabled state is bypassed (DevTools, scripts,
+    // future code paths). Final enforcement will move server-side in commit 1f.
+    if (!canManageClosure) {
+      setDeleteErr(FINANCE_ROLE_TOOLTIP)
+      setDeletingId(null)
+      return
+    }
 
     // RICS Client Money Rule 4.7 + TPI §5: a reconciled or closed account must
     // never be hard-deleted. The PM-facing path is Mark as Closed (is_active=false).
@@ -131,6 +150,7 @@ export function BankAccountsTab({
           firmId={firmId}
           propertyId={propertyId}
           initial={editing}
+          canManageClosure={canManageClosure}
           onSaved={() => { setShowForm(false); setEditing(null); load() }}
           onCancel={() => { setShowForm(false); setEditing(null) }}
         />
@@ -173,6 +193,7 @@ export function BankAccountsTab({
                 <BankAccountRow
                   key={a.id}
                   account={a}
+                  canManageClosure={canManageClosure}
                   isDeleting={deletingId === a.id}
                   onEdit={() => { setEditing(a); setShowForm(true); setDeleteErr(null) }}
                   onAskDelete={() => { setDeletingId(a.id); setDeleteErr(null) }}
@@ -190,9 +211,10 @@ export function BankAccountsTab({
 
 // ── Single row ────────────────────────────────────────────────────────────────
 function BankAccountRow({
-  account, isDeleting, onEdit, onAskDelete, onConfirmDelete, onCancelDelete,
+  account, canManageClosure, isDeleting, onEdit, onAskDelete, onConfirmDelete, onCancelDelete,
 }: {
   account: BankAccount
+  canManageClosure: boolean
   isDeleting: boolean
   onEdit: () => void
   onAskDelete: () => void
@@ -244,6 +266,8 @@ function BankAccountRow({
               className="text-destructive hover:text-destructive"
               onClick={onAskDelete}
               aria-label={`Delete ${account.account_name}`}
+              disabled={!canManageClosure}
+              title={canManageClosure ? undefined : FINANCE_ROLE_TOOLTIP}
             >
               <Trash2 className="h-3.5 w-3.5" />
             </Button>
@@ -278,11 +302,12 @@ function BankAccountRow({
 // BankAccountForm — create and edit
 // ════════════════════════════════════════════════════════════════════════════
 function BankAccountForm({
-  firmId, propertyId, initial, onSaved, onCancel,
+  firmId, propertyId, initial, canManageClosure, onSaved, onCancel,
 }: {
   firmId: string
   propertyId: string
   initial: BankAccount | null
+  canManageClosure: boolean
   onSaved: () => void
   onCancel: () => void
 }) {
@@ -334,9 +359,9 @@ function BankAccountForm({
     if (v) { setError(v); return }
     setSaving(true)
 
-    // is_active false implies a closed_date — auto-stamp today if PM hasn't supplied one.
+    // is_active false implies a closed_date — auto-stamp today if not supplied.
     const closed = !values.is_active
-      ? (values.closed_date || new Date().toISOString().split('T')[0])
+      ? (values.closed_date || todayISODate())
       : null
 
     const payload = {
@@ -375,6 +400,16 @@ function BankAccountForm({
           <h3 className="font-semibold">{initial ? 'Edit bank account' : 'New bank account'}</h3>
           <Button variant="ghost" size="sm" onClick={onCancel}><X className="h-4 w-4" /></Button>
         </div>
+
+        {!canManageClosure && initial && (
+          <div
+            className="mb-4 flex items-start gap-2 text-sm border rounded-md px-3 py-2 bg-muted/40"
+            role="note"
+          >
+            <Lock className="h-4 w-4 mt-0.5 flex-shrink-0 text-muted-foreground" />
+            <span className="text-muted-foreground">{FINANCE_ROLE_TOOLTIP}</span>
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="grid grid-cols-2 gap-4">
           {/* Identity */}
@@ -454,7 +489,8 @@ function BankAccountForm({
             <Input
               id="ba-close"
               type="date"
-              disabled={values.is_active}
+              disabled={values.is_active || !canManageClosure}
+              title={!canManageClosure ? FINANCE_ROLE_TOOLTIP : undefined}
               value={values.closed_date}
               onChange={e => set('closed_date', e.target.value)}
             />
@@ -509,10 +545,17 @@ function BankAccountForm({
 
           {/* Flags */}
           <div className="col-span-2 grid grid-cols-2 gap-2 pt-1">
-            <label className="flex items-center gap-2 text-sm cursor-pointer">
+            <label
+              className={cn(
+                'flex items-center gap-2 text-sm',
+                canManageClosure ? 'cursor-pointer' : 'cursor-not-allowed opacity-60',
+              )}
+              title={!canManageClosure ? FINANCE_ROLE_TOOLTIP : undefined}
+            >
               <input
                 type="checkbox"
                 checked={values.is_active}
+                disabled={!canManageClosure}
                 onChange={e => set('is_active', e.target.checked)}
                 className="h-4 w-4"
               />

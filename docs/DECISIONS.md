@@ -210,6 +210,58 @@ UX commitments for the Phase 6 work, recorded here so 1b doesn't accidentally pr
 
 ---
 
+## 2026-05-09 — Bank account closure role gate (interim) + Critical-Action Authorisations (1f scope)
+
+**Context:** Commit 1b shipped `BankAccountsTab` with no role-based restriction on closure (untick `Active` → auto-stamp `closed_date`) or hard-delete. Any user with `property_manager` could close a client-money account. RICS Client Money Rules and the TPI Code expect firm-level segregation of duties — closure of a client-money account is an accounts-department / financial-controller action, not a day-to-day PM action. The bank itself usually requires two authorised signatories to close such an account. PropOS's current UX did not reflect this.
+
+**Decision (interim, this commit):**
+
+1. **Closure and hard-delete restricted to `admin` or `director` roles.** A new helper `isFinanceRole(role)` and constant `FINANCE_ROLES = ['admin', 'director']` in `app/src/lib/constants.ts` is the gate. `BankAccountsTab` reads the role via `useAuthStore(s => s.firmContext?.role)` and disables: (a) the per-row Delete button, (b) the `Active` checkbox in the edit form, (c) the `closed_date` field in the edit form. Each gated control surfaces a tooltip explaining the restriction. The form itself shows a `Lock` banner when a non-finance user opens an existing account. `handleDelete` re-checks the role server-of-the-UI as defence in depth in case the disabled state is bypassed (DevTools, future code paths). Final enforcement will move server-side in commit 1f.
+2. **Existing `admin`/`director` roles are reused; no new `finance` role is introduced mid-PoC.** Adding a `finance` (or `accounts_clerk` / `financial_controller`) role would require a migration, JWT-claim rework, and seed-data updates. The architectural call is to defer the role-taxonomy expansion to a phase boundary; for the interim, `admin` and `director` are the finance-empowered roles.
+3. **Test coverage gap acknowledged.** The smoke harness only authenticates as `admin`. The PM-side gate has no test coverage in this commit. A PM seed user + a "PM cannot close / delete" smoke is a 1f deliverable, recorded here so it doesn't get lost. Existing 8 bank-account tests run as admin and continue to pass unchanged.
+
+**Decision (planned for commit 1f — Critical-Action Authorisations):**
+
+The simple role gate above is a stopgap. Commit 1f's scope is widened from "Payment Authorisations" to **Critical-Action Authorisations**, covering ALL of:
+
+- **Payments above `bank_accounts.dual_auth_threshold`** on accounts with `requires_dual_auth=true` (originally-planned scope).
+- **Bank account closure** (`is_active: true → false`) — replacing the interim role gate with a proper second-signer flow. Closure becomes a request that an admin / director can initiate but that requires a second authorised signer to execute.
+- **RICS-designation toggle** (`rics_designated: true → false` on an account that ever held client money) — high-stakes flag change that should not be a single-user action.
+- **Hard-delete on never-reconciled accounts** — already FK-blocked once transactions exist; the dual-auth path becomes the override-of-last-resort if the account also has `closed_date IS NULL` and `last_reconciled_at IS NULL` (the existing 1b conditions).
+
+The infrastructure (`payment_authorisations` table at 00005:170-185, RLS at 00012:126-128) is already deployed; commit 1f adds the request/authorise/reject UI and extends the table to cover non-payment actions if the schema needs `action_type` and `subject_id` columns (TBD at 1f planning).
+
+**Rationale:** Segregation of duties is the bright-line control for client-money handling. RICS inspections check that the firm's procedures match what the system enforces. A firm that has "two-signer required" in its policy but a single-PM-clicks-untick-Active in its software has a control failure. The interim role gate closes the most acute hole today; 1f delivers the proper dual-auth flow that mirrors how the bank itself handles closure. Reusing `admin`/`director` rather than introducing a `finance` role keeps the role taxonomy stable for the PoC; a clean role expansion (with `finance` / `accounts_clerk` / `financial_controller`) can land at a phase boundary when the seed data, JWT hook, and RLS policies can all be updated together.
+
+---
+
+## 2026-05-09 — Property data portability — exit-to-new-agent requirement
+
+**Context:** Property management contracts are terminable. When a managing agent loses (or hands over) a property — by client choice, by RMC re-tender, or by liquidation — the regulatory expectation is that all data for that property transfers cleanly to the incoming agent. PropOS must support this without per-customer engineering work.
+
+**Decision (recorded as a forward-looking constraint; no code in this commit):**
+
+PropOS will support a one-button **"Export property"** action that produces a portable archive of every record scoped to a single `property_id`. The archive must include, at minimum:
+
+- `properties` row + `units`, `leaseholders` (current AND historical), `bank_accounts`, `service_charge_accounts`, `budget_line_items`, `demands`, `transactions`, `payment_authorisations`, `invoices`, `bank_statement_imports`.
+- Compliance + works artefacts: `compliance_items`, `insurance_records`, `works_orders`, `section20_consultations`, `dispensation_applications`, related `contractor_quotations`.
+- Contractor links: contractors that have ever done work for the property (denormalised so the receiving agent has the contact details, not just an FK to a row they don't have).
+- Documents: every file in storage referenced by `documents.id` for that property, included as raw files in a `documents/` folder of the archive.
+- Audit: all relevant `audit_log` entries (when that table exists in Phase 5+).
+
+Format: a single zip containing one JSON file per table (one row per line, JSONL preferred for large transactional tables) plus the `documents/` folder. A top-level `manifest.json` records the schema version, export timestamp, exporting firm, and the receiving agent's identifier (if known). The format spec lives in `docs/EXPORT_FORMAT.md` (to be written when the export is built).
+
+Out of scope until **at least Phase 6** (Reporting), possibly later. Recorded here so schema decisions in the interim do not accidentally break per-property partitioning. Specifically:
+
+- **Every per-property record must carry `property_id` directly** or be reachable via a single FK hop from a row that does (e.g. `transactions.property_id` is denormalised even though `transactions.bank_account_id → bank_accounts.property_id` would also work — the denormalisation is intentional and load-bearing for portability).
+- **Document storage paths must be reversible to property scope** — currently `documents.path` includes the property id; do not introduce paths that depend on global state.
+- **Avoid global lookup tables that mix property-scoped and firm-scoped rows** without a discriminator. The `trade_categories` table (00021) is firm-scoped; that's fine. But avoid (e.g.) a "tags" table that would need to be partially copied.
+- **Soft-delete must preserve the `property_id` column** — historical-leaseholder rows are exportable; tombstoned rows that have lost their property linkage are not.
+
+**Rationale:** Data portability is both a contractual expectation and an emerging regulatory norm (UK GDPR Article 20 covers the leaseholder personal-data dimension; the firm-to-firm handover dimension is contractual but increasingly tested in tender processes). Building the export later is fine; building it later when the schema accidentally crossed a property partition boundary is expensive. Recording the constraint in DECISIONS turns it into a checklist item for every future schema change.
+
+---
+
 ## 2026-05-07 — pgAudit enablement approach
 
 **Context:** Section 4 requires pgAudit to be enabled before any data migration. The Supabase hosted project does not allow direct superuser SQL for extension creation on the free tier in some cases.

@@ -49,6 +49,17 @@ export const USER_ROLES = [
 ] as const
 export type UserRole = (typeof USER_ROLES)[number]
 
+/**
+ * Roles authorised to perform bank-account closure and hard-delete (the
+ * regulated-finance actions). See DECISIONS 2026-05-09 — bank account closure
+ * role gate. Replaced in commit 1f by the full Critical-Action Authorisations
+ * dual-auth flow, which will additionally require a second signer.
+ */
+export const FINANCE_ROLES = ['admin', 'director'] as const satisfies readonly UserRole[]
+export function isFinanceRole(role: UserRole | null | undefined): boolean {
+  return role != null && (FINANCE_ROLES as readonly UserRole[]).includes(role)
+}
+
 // Demand types — matches demand_type column in the demands table
 export const DEMAND_TYPES = [
   'service_charge',
