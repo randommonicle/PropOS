@@ -4,3 +4,4 @@
  * @/components/modules/financial — never from individual files.
  */
 export { BankAccountsTab } from './BankAccountsTab'
+export { ServiceChargeAccountsTab } from './ServiceChargeAccountsTab'

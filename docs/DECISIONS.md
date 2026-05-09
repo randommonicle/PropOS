@@ -162,6 +162,25 @@ UX commitments for the Phase 6 work, recorded here so 1b doesn't accidentally pr
 
 ---
 
+## 2026-05-09 — Service charge accounts: finalisation lock, status state machine, delete policy
+
+**Context:** Phase 3 commit 1c introduces `ServiceChargeAccountsTab` as the fifth per-property tab. The `service_charge_accounts` schema (00005:38-53) defines a `status` field with values `draft | active | reconciling | finalised` and audit columns `finalised_at` / `finalised_by`. The spec does not separately enumerate what is editable at each status, who stamps the audit columns, or when hard-delete is permitted. Those rules are needed before reconciliation, demands, and budget line items consume this account row in later commits.
+
+**Decision:**
+
+1. **Status state machine.** `draft → active → reconciling → finalised`. The Edit form exposes all four values in the `Status` select. The only hard-enforced transition rule in 1c is **no reversion from `finalised`**: once an account's stored `status` is `finalised`, the form opens with year start, year end, budget total, and status all disabled, and only the `notes` field is editable. The form surfaces a regulatory note explaining the lock.
+2. **Audit-column stamping.** `finalised_at` is set to `NOW()` and `finalised_by` is set to the current authenticated user id at the moment the form transitions an account into `finalised` for the first time. On subsequent edits of an already-finalised account (notes only), the existing stamps are preserved unchanged. Server-side enforcement (rejecting a write that violates these rules from a non-UI client) is deferred to the financial-rules Edge Function in a later commit; for 1c the client guard plus RLS (admin / property manager only — 00012:114-116) is sufficient.
+3. **Delete policy.** Hard-delete is permitted ONLY when both:
+   - `status = 'draft'` (UI guard before the network call), and
+   - no FK references exist from `budget_line_items` or `demands` (Postgres FK + 23503 surfacing in the UI).
+
+   Any other status forces the PM to leave the row in place. The deletion-attempt error message names RICS Client Money Rule 4.7 and TPI Code §5 explicitly so the PM understands the constraint is regulatory, not technical. This mirrors the bank-accounts deletion policy from 1b.
+4. **Out of scope for 1c (deliberate).** The per-property "one active SCA per accounting year" constraint is not enforced. It will land alongside the reconciliation engine when the meaning of "active" is precise enough to pin down a uniqueness constraint without false positives across overlapping mid-year handovers.
+
+**Rationale:** The `finalised` status is the closing record of a service-charge year — once issued to leaseholders and reconciled, its dates and budget total are evidence in any future LTA s.27A challenge. Reverting via the UI would compromise that evidential value. Stamping the audit columns at the UI boundary keeps the data path simple for 1c; the Edge Function adds defence-in-depth for non-UI writers (imports, future API consumers) when the financial-rules layer is built. The draft-only delete gate matches the bank-accounts policy and keeps the audit-retention story consistent across financial entities.
+
+---
+
 ## 2026-05-07 — pgAudit enablement approach
 
 **Context:** Section 4 requires pgAudit to be enabled before any data migration. The Supabase hosted project does not allow direct superuser SQL for extension creation on the free tier in some cases.
