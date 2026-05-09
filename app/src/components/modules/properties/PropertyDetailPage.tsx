@@ -34,7 +34,7 @@ import {
   Tabs, TabsList, TabsTrigger, TabsContent,
 } from '@/components/ui'
 import { ChevronLeft, Plus, Pencil, Trash2, X, AlertTriangle } from 'lucide-react'
-import { cn, formatDate } from '@/lib/utils'
+import { cn, formatDate, todayISODate } from '@/lib/utils'
 import { formatPounds } from '@/lib/money'
 import { BankAccountsTab, ServiceChargeAccountsTab, DemandsTab } from '@/components/modules/financial'
 import type { Database } from '@/types/database'
@@ -153,7 +153,7 @@ export function PropertyDetailPage() {
   async function handleEndLeaseholder(lh: Leaseholder) {
     await supabase.from('leaseholders').update({
       is_current: false,
-      to_date: new Date().toISOString().split('T')[0],
+      to_date: todayISODate(),
     }).eq('id', lh.id)
     if (id) load(id)
   }

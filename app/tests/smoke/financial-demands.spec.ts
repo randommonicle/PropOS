@@ -31,6 +31,19 @@ async function goToDemandsTab(page: Page) {
 }
 
 /**
+ * Locate a demand row by its unit_ref AND amount. Both seeded test demands and
+ * any pre-existing demands share the unit_ref, so we additionally filter by
+ * amount which is chosen unique per test. This avoids the brittle `.first()`
+ * chains that silently pick a row when more than one matches.
+ */
+function rowByUnitAndAmount(page: Page, unitRef: string, amountPounds: number) {
+  const amountText = `£${amountPounds.toFixed(2)}`
+  return page.getByRole('main').locator('tr', {
+    has: page.getByRole('cell', { name: unitRef, exact: true }),
+  }).filter({ hasText: amountText })
+}
+
+/**
  * Resolve a property + unit + current leaseholder triplet via Supabase. The
  * dev seed has properties and units but does NOT seed leaseholders, so the
  * helper inserts a test-scoped leaseholder against the first property's first
@@ -114,7 +127,7 @@ test.describe('Property detail — demands', () => {
     await expect(page.getByLabel('Leaseholder *')).toBeEnabled()
     await page.getByLabel('Leaseholder *').selectOption(lh.id)
 
-    await page.getByLabel('Demand type *').selectOption('Service charge')
+    await page.getByLabel('Demand type *').selectOption('Service Charge')
 
     const amount = page.getByLabel('Amount *')
     await amount.fill('456.78')
@@ -141,8 +154,9 @@ test.describe('Property detail — demands', () => {
     })
 
     await page.goto(`/properties/${prop.id}?tab=demands`)
-    const row = page.getByRole('main').locator('tr', { has: page.getByText(`£100.00`).first() }).first()
-    await row.getByRole('button', { name: /Edit .* service_charge demand/ }).first().click()
+    const editName = `Edit ${unit.unit_ref} service_charge demand`
+    const row = rowByUnitAndAmount(page, unit.unit_ref, 100)
+    await row.getByRole('button', { name: editName }).click()
     await expect(page.getByRole('heading', { name: 'Edit demand' })).toBeVisible()
 
     await page.getByLabel('Notes').clear()
@@ -150,9 +164,9 @@ test.describe('Property detail — demands', () => {
     await page.getByRole('button', { name: 'Update demand' }).click()
     await expect(page.getByRole('heading', { name: 'Edit demand' })).not.toBeVisible()
 
-    // Reopen and confirm.
-    const row2 = page.getByRole('main').locator('tr', { has: page.getByText(`£100.00`).first() }).first()
-    await row2.getByRole('button', { name: /Edit .* service_charge demand/ }).first().click()
+    // Reopen and confirm — re-derive the row locator after the form closed.
+    await rowByUnitAndAmount(page, unit.unit_ref, 100)
+      .getByRole('button', { name: editName }).click()
     await expect(page.getByLabel('Notes')).toHaveValue(updated)
   })
 
@@ -217,8 +231,8 @@ test.describe('Property detail — demands', () => {
     if (!dem) throw new Error('Failed to seed demand row')
 
     await page.goto(`/properties/${prop.id}?tab=demands`)
-    const row = page.getByRole('main').locator('tr', { has: page.getByText(/£250\.00/).first() }).first()
-    await row.getByRole('button', { name: /Edit .* service_charge demand/ }).first().click()
+    const row = rowByUnitAndAmount(page, unit.unit_ref, 250)
+    await row.getByRole('button', { name: `Edit ${unit.unit_ref} service_charge demand` }).click()
 
     await page.getByLabel(/Section 21B summary attached/).check()
     await page.getByLabel('Status').selectOption('Issued')
@@ -245,8 +259,8 @@ test.describe('Property detail — demands', () => {
     })
 
     await page.goto(`/properties/${prop.id}?tab=demands`)
-    const row = page.getByRole('main').locator('tr', { has: page.getByText(/£999\.00/).first() }).first()
-    await row.getByRole('button', { name: /Edit .* service_charge demand/ }).first().click()
+    const row = rowByUnitAndAmount(page, unit.unit_ref, 999)
+    await row.getByRole('button', { name: `Edit ${unit.unit_ref} service_charge demand` }).click()
     await expect(page.getByRole('heading', { name: 'Edit demand' })).toBeVisible()
 
     // Lock note surfaces.
@@ -278,12 +292,12 @@ test.describe('Property detail — demands', () => {
     })
 
     await page.goto(`/properties/${prop.id}?tab=demands`)
-    const row = page.getByRole('main').locator('tr', { has: page.getByText(/£11\.00/).first() }).first()
-    await row.getByRole('button', { name: /Delete .* service_charge demand/ }).first().click()
+    const row = rowByUnitAndAmount(page, unit.unit_ref, 11)
+    await row.getByRole('button', { name: `Delete ${unit.unit_ref} service_charge demand` }).click()
     await expect(page.getByRole('button', { name: 'Confirm delete' })).toBeVisible()
 
     await page.getByRole('button', { name: 'Confirm delete' }).click()
-    await expect(page.getByText(/£11\.00/)).not.toBeVisible()
+    await expect(rowByUnitAndAmount(page, unit.unit_ref, 11)).toHaveCount(0)
   })
 
   test('non-draft demand cannot be hard-deleted (RICS / TPI / s.20B)', async ({ page }) => {
@@ -299,12 +313,12 @@ test.describe('Property detail — demands', () => {
     })
 
     await page.goto(`/properties/${prop.id}?tab=demands`)
-    const row = page.getByRole('main').locator('tr', { has: page.getByText(/£22\.00/).first() }).first()
-    await row.getByRole('button', { name: /Delete .* service_charge demand/ }).first().click()
+    const row = rowByUnitAndAmount(page, unit.unit_ref, 22)
+    await row.getByRole('button', { name: `Delete ${unit.unit_ref} service_charge demand` }).click()
     await page.getByRole('button', { name: 'Confirm delete' }).click()
 
     // Status guard fires first; message names RICS Rule 4.7, TPI §5, and LTA s.20B.
     await expect(page.getByText(/RICS Client Money Rule 4\.7/i)).toBeVisible()
-    await expect(page.getByText(/£22\.00/).first()).toBeVisible()
+    await expect(row).toBeVisible()
   })
 })

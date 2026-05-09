@@ -33,8 +33,12 @@ import {
 } from '@/components/ui'
 import { MoneyInput } from '@/components/shared/MoneyInput'
 import { Plus, Pencil, Trash2, X, AlertTriangle, Lock } from 'lucide-react'
-import { cn, formatDate } from '@/lib/utils'
+import { cn, formatDate, formatYearLabel, slugToTitle, todayISODate } from '@/lib/utils'
 import { poundsToP, pToPounds, formatPounds } from '@/lib/money'
+import {
+  DEMAND_TYPES, type DemandType,
+  DEMAND_STATUSES, type DemandStatus,
+} from '@/lib/constants'
 import type { Database } from '@/types/database'
 
 type Demand              = Database['public']['Tables']['demands']['Row']
@@ -44,29 +48,11 @@ type ServiceChargeAccount = Database['public']['Tables']['service_charge_account
 
 const SELECT_CLASS = 'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-60'
 
-type DemandStatus =
-  | 'draft' | 'issued' | 'part_paid' | 'paid'
-  | 'overdue' | 'disputed' | 'withdrawn'
-type DemandType =
-  | 'service_charge' | 'ground_rent' | 'reserve_fund' | 'admin_charge' | 'ad_hoc'
+const STATUS_OPTIONS: Array<{ value: DemandStatus; label: string }> =
+  DEMAND_STATUSES.map(value => ({ value, label: slugToTitle(value) }))
 
-const STATUS_OPTIONS: Array<{ value: DemandStatus; label: string }> = [
-  { value: 'draft',     label: 'Draft' },
-  { value: 'issued',    label: 'Issued' },
-  { value: 'part_paid', label: 'Part paid' },
-  { value: 'paid',      label: 'Paid' },
-  { value: 'overdue',   label: 'Overdue' },
-  { value: 'disputed',  label: 'Disputed' },
-  { value: 'withdrawn', label: 'Withdrawn' },
-]
-
-const DEMAND_TYPE_OPTIONS: Array<{ value: DemandType; label: string }> = [
-  { value: 'service_charge', label: 'Service charge' },
-  { value: 'ground_rent',    label: 'Ground rent' },
-  { value: 'reserve_fund',   label: 'Reserve fund' },
-  { value: 'admin_charge',   label: 'Admin charge' },
-  { value: 'ad_hoc',         label: 'Ad hoc' },
-]
+const DEMAND_TYPE_OPTIONS: Array<{ value: DemandType; label: string }> =
+  DEMAND_TYPES.map(value => ({ value, label: slugToTitle(value) }))
 
 const STATUS_BADGE_VARIANT: Record<DemandStatus, 'secondary' | 'amber' | 'green' | 'destructive'> = {
   draft:     'secondary',
@@ -162,12 +148,12 @@ export function DemandsTab({
     load()
   }
 
+  const unitMap        = useMemo(() => new Map(units.map(u => [u.id, u.unit_ref])), [units])
+  const leaseholderMap = useMemo(() => new Map(leaseholders.map(lh => [lh.id, lh.full_name])), [leaseholders])
+
   if (loading) {
     return <div className="text-sm text-muted-foreground">Loading demands…</div>
   }
-
-  const unitMap        = new Map(units.map(u => [u.id, u.unit_ref]))
-  const leaseholderMap = new Map(leaseholders.map(lh => [lh.id, lh.full_name]))
 
   return (
     <section aria-label="Demands">
@@ -281,7 +267,7 @@ function DemandRow({
       <tr className={cn('border-t hover:bg-muted/30', status === 'paid' && 'opacity-80')}>
         <td className="px-4 py-2 font-medium">{unitRef}</td>
         <td className="px-4 py-2">{leaseholderName}</td>
-        <td className="px-4 py-2 capitalize">{demand.demand_type.replace(/_/g, ' ')}</td>
+        <td className="px-4 py-2">{slugToTitle(demand.demand_type)}</td>
         <td className="px-4 py-2 text-muted-foreground text-xs">{period}</td>
         <td className="px-4 py-2">{formatPounds(demand.amount)}</td>
         <td className="px-4 py-2 text-xs text-muted-foreground">
@@ -296,8 +282,8 @@ function DemandRow({
           </Badge>
         </td>
         <td className="px-4 py-2">
-          <Badge variant={STATUS_BADGE_VARIANT[status] ?? 'secondary'}>
-            {STATUS_OPTIONS.find(o => o.value === status)?.label ?? status}
+          <Badge variant={STATUS_BADGE_VARIANT[status]}>
+            {slugToTitle(status)}
           </Badge>
         </td>
         <td className="px-4 py-2">
@@ -326,7 +312,7 @@ function DemandRow({
             <div className="flex items-center gap-3 text-sm flex-wrap">
               <AlertTriangle className="h-4 w-4 text-destructive flex-shrink-0" />
               <span>
-                Delete the <strong>{unitRef}</strong> {demand.demand_type.replace(/_/g, ' ')} demand?
+                Delete the <strong>{unitRef}</strong> {slugToTitle(demand.demand_type)} demand?
                 Only draft demands can be removed; once issued, the row must be retained for audit.
               </span>
               <Button size="sm" variant="destructive" onClick={onConfirmDelete}>
@@ -438,7 +424,7 @@ function DemandForm({
     const transitioningToIssued =
       values.status === 'issued' && initial?.status !== 'issued'
     const issued_date = values.issued_date
-      || (transitioningToIssued ? new Date().toISOString().split('T')[0] : null)
+      || (transitioningToIssued ? todayISODate() : null)
 
     const payload = {
       firm_id:        firmId,
@@ -557,8 +543,7 @@ function DemandForm({
               <option value="">Not linked</option>
               {accounts.map(a => (
                 <option key={a.id} value={a.id}>
-                  {`${a.account_year_start.slice(0, 4)}–${a.account_year_end.slice(0, 4)}`}
-                  {' '}({a.status})
+                  {formatYearLabel(a.account_year_start, a.account_year_end)} ({a.status})
                 </option>
               ))}
             </select>

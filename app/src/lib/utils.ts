@@ -69,3 +69,23 @@ export function slugToTitle(slug: string): string {
     .map(word => word.charAt(0).toUpperCase() + word.slice(1))
     .join(' ')
 }
+
+/**
+ * Today's date as an ISO `YYYY-MM-DD` string in the local time zone.
+ * Used for client-side stamping of audit columns (`finalised_at`, `issued_date`,
+ * `closed_date`) so the UI does not pre-judge a UTC vs. en-GB calendar boundary.
+ */
+export function todayISODate(): string {
+  return new Date().toISOString().split('T')[0]
+}
+
+/**
+ * Render a "year–year" label from two ISO date strings.
+ * @example formatYearLabel("2025-04-01", "2026-03-31") → "2025–2026"
+ *          formatYearLabel("2025-01-01", "2025-12-31") → "2025"
+ */
+export function formatYearLabel(start: string | null | undefined, end: string | null | undefined): string {
+  const s = start ? start.slice(0, 4) : ''
+  const e = end   ? end.slice(0, 4)   : ''
+  return s && e && s !== e ? `${s}–${e}` : (s || e || '—')
+}

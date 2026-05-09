@@ -79,6 +79,19 @@ export const SERVICE_CHARGE_ACCOUNT_STATUSES = [
   'reconciling',
   'finalised',
 ] as const
+export type ServiceChargeAccountStatus = (typeof SERVICE_CHARGE_ACCOUNT_STATUSES)[number]
+
+// Demand statuses — matches status column in the demands table
+export const DEMAND_STATUSES = [
+  'draft',
+  'issued',
+  'part_paid',
+  'paid',
+  'overdue',
+  'disputed',
+  'withdrawn',
+] as const
+export type DemandStatus = (typeof DEMAND_STATUSES)[number]
 
 // Section 20 consultation statuses (state machine)
 export const SECTION_20_STATUSES = [

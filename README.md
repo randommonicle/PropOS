@@ -2,7 +2,7 @@
 
 Full-stack property management operating system for RICS-regulated managing agents, SME agents, and RMC/RTM self-managed blocks.
 
-**Status:** Phase 2 complete + UX polish ✓ — Phase 3 (Financial) next
+**Status:** Phase 3 (Financial) in progress — bank accounts, service charge accounts, and demands shipped (1a–1d). Transactions and reconciliation engine next.
 
 ---
 
@@ -117,7 +117,7 @@ npm run test:smoke:report    # open last HTML report
 
 The dev server must be running (`npm run dev`) or Playwright will start it automatically.
 
-**Current coverage (Phases 1 & 2):**
+**Current coverage (Phases 1, 2, and Phase 3 commits 1a–1d):**
 
 | Spec | Tests |
 |------|-------|
@@ -128,9 +128,13 @@ The dev server must be running (`npm run dev`) or Playwright will start it autom
 | compliance | Page load, RAG summary, tabs, create round-trip |
 | contractors | Page load, sidebar nav, create round-trip |
 | works | Page load, tabs, works order create, S20 create |
-| property_detail | Units CRUD (create, edit, delete+confirm); leaseholders CRUD (create, edit, end, delete+confirm) |
+| property_detail | Units CRUD (create, edit, delete+confirm); leaseholders CRUD (create, edit, end, delete+confirm); tab navigation |
+| financial-bank-accounts | Bank accounts CRUD, MoneyInput round-trip, last-4 validation, mark-as-closed, regulatory delete guard |
+| financial-service-charge-accounts | SCA CRUD, status state machine, finalised lock, draft-only delete, FK-blocked delete |
+| financial-demands | Demands CRUD, leaseholder picker filtering, LTA s.21B guard (status + issued_date), state machine, paid lock, draft-only delete, regulatory delete guard |
 
-Both runners are active. Run both before declaring any change complete.
+**Total: 62 tests passing.** Both Node.js and Python runners are active. Run both before declaring any change complete.
+
 
 ---
 
@@ -152,7 +156,7 @@ Full decision log: [`docs/DECISIONS.md`](docs/DECISIONS.md)
 |-------|--------|-------------|
 | 1 — Foundation | ✅ Complete | Schema, auth, CRUD, document vault, dashboard |
 | 2 — Compliance & Works | ✅ Complete | Compliance tracker (RAG), insurance tracker, contractor register + managed trade categories, works orders, dispatch engine (token + email), contractor response page, Section 20 full lifecycle, UX polish |
-| 3 — Financial | Planned | Service charge demands, budgets, bank reconciliation |
+| 3 — Financial | In progress | ✓ Bank accounts, ✓ Service charge accounts, ✓ Demands. Transactions, reconciliation, statement import next. |
 | 4 — Portals | Planned | Leaseholder portal, maintenance requests |
 | 5 — BSA Module | Planned | Golden Thread, mandatory occurrences, HRB register |
 | 6 — Reporting | Planned | PDF reports, AGM packs, Section 20B schedules |

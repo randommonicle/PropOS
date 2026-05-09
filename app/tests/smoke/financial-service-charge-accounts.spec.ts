@@ -158,14 +158,16 @@ test.describe('Property detail — service charge accounts', () => {
       await expect(page.getByRole('heading', { name: 'Edit service charge account' })).not.toBeVisible()
     }
 
-    // After finalisation: badge reads Finalised, and reopening the row shows the
-    // "Finalised <date>" metadata line — proving finalised_at was stamped.
+    // After finalisation: status cell shows the Finalised badge, and reopening the
+    // row exposes the "Finalised <date>" metadata line — proving finalised_at was stamped.
     const finalRow = page.getByRole('main').locator('tr', { has: page.getByRole('cell', { name: '2202', exact: true }) })
-    await expect(finalRow.getByText('Finalised', { exact: true })).toBeVisible()
+    await expect(finalRow.getByRole('cell').filter({ hasText: /^Finalised$/ })).toBeVisible()
 
     await finalRow.getByRole('button', { name: /Edit 2202 service charge account/ }).click()
     await expect(page.getByRole('heading', { name: 'Edit service charge account' })).toBeVisible()
-    await expect(page.getByText(/Finalised \d/)).toBeVisible()
+    // Match the formatted en-GB date prefixed by "Finalised " — this is unique to
+    // the form's metadata line; the badge says only "Finalised" without a date.
+    await expect(page.getByText(/Finalised \d{2}\/\d{2}\/\d{4}/)).toBeVisible()
   })
 
   test('finalised guard — opening a finalised account locks status, dates, budget; only notes editable', async ({ page }) => {

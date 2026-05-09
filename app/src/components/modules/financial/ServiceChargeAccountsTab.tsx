@@ -28,22 +28,18 @@ import {
 } from '@/components/ui'
 import { MoneyInput } from '@/components/shared/MoneyInput'
 import { Plus, Pencil, Trash2, X, AlertTriangle, Lock } from 'lucide-react'
-import { cn, formatDate } from '@/lib/utils'
+import { cn, formatDate, formatYearLabel, slugToTitle } from '@/lib/utils'
 import { poundsToP, pToPounds, formatPounds } from '@/lib/money'
+import { SERVICE_CHARGE_ACCOUNT_STATUSES, type ServiceChargeAccountStatus } from '@/lib/constants'
 import type { Database } from '@/types/database'
 
 type ServiceChargeAccount = Database['public']['Tables']['service_charge_accounts']['Row']
+type SCAStatus = ServiceChargeAccountStatus
 
 const SELECT_CLASS = 'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-60'
 
-type SCAStatus = 'draft' | 'active' | 'reconciling' | 'finalised'
-
-const STATUS_OPTIONS: Array<{ value: SCAStatus; label: string }> = [
-  { value: 'draft',       label: 'Draft' },
-  { value: 'active',      label: 'Active' },
-  { value: 'reconciling', label: 'Reconciling' },
-  { value: 'finalised',   label: 'Finalised' },
-]
+const STATUS_OPTIONS: Array<{ value: SCAStatus; label: string }> =
+  SERVICE_CHARGE_ACCOUNT_STATUSES.map(value => ({ value, label: slugToTitle(value) }))
 
 const STATUS_BADGE_VARIANT: Record<SCAStatus, 'secondary' | 'amber' | 'green'> = {
   draft:       'secondary',
@@ -212,8 +208,8 @@ function ServiceChargeAccountRow({
           {account.budget_total != null ? formatPounds(account.budget_total) : '—'}
         </td>
         <td className="px-4 py-2">
-          <Badge variant={STATUS_BADGE_VARIANT[status] ?? 'secondary'}>
-            {capitalise(status)}
+          <Badge variant={STATUS_BADGE_VARIANT[status]}>
+            {slugToTitle(status)}
           </Badge>
         </td>
         <td className="px-4 py-2 text-xs text-muted-foreground">
@@ -457,13 +453,3 @@ function ServiceChargeAccountForm({
   )
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-function formatYearLabel(start: string, end: string): string {
-  const s = start ? start.slice(0, 4) : ''
-  const e = end ? end.slice(0, 4) : ''
-  return s && e && s !== e ? `${s}–${e}` : (s || e || '—')
-}
-
-function capitalise(s: string): string {
-  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s
-}
