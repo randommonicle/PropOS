@@ -262,6 +262,38 @@ Out of scope until **at least Phase 6** (Reporting), possibly later. Recorded he
 
 ---
 
+## 2026-05-10 — Transactions: tab placement, sign convention, dual-auth gate, demand auto-status, locks, delete policy
+
+**Context:** Phase 3 commit 1e introduces `TransactionsTab` as the seventh per-property tab, completing the third of four core financial entities (bank accounts, service charge accounts, demands, transactions). The `transactions` schema (00005:118-138) carries a single signed `amount` column (positive = in, negative = out), an FK to `bank_accounts` (NOT NULL), an optional FK to `demands` for receipt linking, and an optional `statement_import_id` for rows sourced from a bank statement upload. The `sync_bank_account_balance` trigger (00005:144-165) maintains `bank_accounts.current_balance` from `SUM(transactions.amount)` on every INSERT / UPDATE / DELETE — the UI never writes the balance directly.
+
+**Decision:**
+
+1. **Tab placement: per-property, with bank-account filter.** Transactions is the seventh per-property tab on `PropertyDetailPage`. The list shows all transactions for the property and is filterable by bank account via a dropdown. Per-bank-account drill-down (e.g. clicking a bank account row to see only its transactions) is a future enhancement; for now the property-level view matches what RICS / TPI inspectors examine. Justification: transactions are conceptually "things that happened to this property's money," and the property is the natural audit unit.
+2. **Sign convention.** The DB stores signed amounts. The PM enters absolute amounts in the form and the sign is derived from `transaction_type`:
+   - `receipt` → saved as `+amount`.
+   - `payment` → saved as `-amount` (validated `amount > 0` before flip).
+   - `journal` → MoneyInput with `allowNegative=true`; the PM picks the sign explicitly (validated `amount !== 0`).
+   - `inter_account_transfer` is in the schema enum but **not surfaced in the type selector** for 1e. Paired-row creation (one debit + one credit on different accounts, atomically linked) is a deferred commit.
+3. **Dual-auth gate (interim block; full flow in 1f).** When a `payment` is being created against an account with `requires_dual_auth=true` AND amount exceeds `dual_auth_threshold`, the form **rejects the save** with a message: "This payment requires dual authorisation (threshold £X.XX). Use the Payment Authorisations workflow (Phase 3 commit 1f, deferred). In the interim, payments above threshold cannot be created from this UI." No transaction is inserted. This is consistent with the closure role gate from 1d.1 — block at the UI now, full second-signer infrastructure ships in 1f's Critical-Action Authorisations work.
+4. **Demand linking auto-status.** Setting `demand_id` on a `receipt` transaction triggers a follow-up update on the linked demand: the form sums all receipts against that demand and transitions the demand to:
+   - `paid` if `SUM(receipts) ≥ demand.amount`.
+   - `part_paid` otherwise (whenever there's at least one receipt).
+   The transition is forward-only — never reverts a paid demand back. Deletion of a receipt does NOT auto-revert the demand status; the PM updates manually if needed. The linkable demand picker is filtered to demands on the same property with status in `{issued, part_paid, overdue}` (the open statuses) so already-paid or withdrawn demands cannot be re-linked. Full payment-allocation engine (multiple receipts → one demand with explicit allocation, refunds, partial reversals) is deferred.
+5. **Reconciled lock.** When `reconciled=true`, the form opens with all fields disabled and surfaces a regulatory note (RICS Rule 4.7 / TPI §5). The per-row Delete button is also disabled with a tooltip. The only path to undo a reconciliation is the bank reconciliation workflow — which is deferred to its own commit. Defence-in-depth role re-check in `handleDelete` matches the pattern from 1d.1's bank-account closure gate.
+6. **Statement-import lock.** When `statement_import_id IS NOT NULL`, the row is similarly locked from edit AND delete. Statement-imported transactions are part of an upstream audit chain (CSV / OFX / Open Banking when AIS lands) and are immutable from the UI. Adjustments must be made via a corresponding journal transaction so the upstream chain is preserved.
+7. **Delete policy.** Hard-delete permitted ONLY when `reconciled=false` AND `statement_import_id IS NULL`. The `sync_bank_account_balance` trigger automatically adjusts `bank_accounts.current_balance`. Rejection messages name RICS Rule 4.7 / TPI §5 for the reconciled case and the upstream audit chain for the import case.
+8. **Out of scope for 1e (deliberate).**
+   - **Bank reconciliation workflow** — the UI to mark transactions as reconciled, match against statement-import rows, and produce reconciliation reports. Separate commit.
+   - **Statement import pipeline** — CSV / OFX upload + matching engine. Separate commit. The `bank_statement_imports` table at 00005:232 is already in the schema; the UI is not yet built.
+   - **Inter-account transfer paired rows** — see (2). Separate commit.
+   - **Multi-demand allocation, refunds, partial reversals** — see (4). Deferred to the payment-allocation engine.
+   - **Contractor invoice matching** — `transactions.invoice_id` FK is in the schema but not surfaced in the form. Lands when invoices CRUD ships.
+   - **Server-side enforcement of dual-auth + reconciled-lock + statement-import-lock** — UI guards only in 1e. Full enforcement in the financial-rules Edge Function (already noted as deferred in 1c and 1d's DECISIONS entries).
+
+**Rationale:** The signed-amount + trigger pattern keeps the bank balance correct without the UI ever doing arithmetic — meaning the test "did the balance update?" is a smoke assertion against the database, not against the UI's display, and that's what RICS would verify in a real inspection. The dual-auth interim block is the same pattern as 1d.1: when full enforcement is one commit away, blocking the action at the UI is safer than letting it slip and adding a retroactive fix. The demand auto-status closes the most common UX gap — a PM marking a receipt without then having to also navigate to the demand to mark it paid — while leaving the multi-allocation complexity for the payment-allocation engine that is the right home for it. The reconciled and statement-import locks mirror the SCA finalised lock and the demand paid lock, so the audit-retention story is consistent across all four financial entities.
+
+---
+
 ## 2026-05-07 — pgAudit enablement approach
 
 **Context:** Section 4 requires pgAudit to be enabled before any data migration. The Supabase hosted project does not allow direct superuser SQL for extension creation on the free tier in some cases.

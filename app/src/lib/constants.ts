@@ -104,6 +104,24 @@ export const DEMAND_STATUSES = [
 ] as const
 export type DemandStatus = (typeof DEMAND_STATUSES)[number]
 
+/**
+ * Transaction types — matches transaction_type column in the transactions table.
+ * `inter_account_transfer` is in the schema enum but NOT surfaced by the 1e UI;
+ * paired-row creation (one debit + one credit on different accounts, atomically
+ * linked) requires its own commit.
+ */
+export const TRANSACTION_TYPES = [
+  'receipt',
+  'payment',
+  'journal',
+  'inter_account_transfer',
+] as const
+export type TransactionType = (typeof TRANSACTION_TYPES)[number]
+
+/** Statuses for which a demand may still receive a receipt allocation. */
+export const DEMAND_OPEN_STATUSES: readonly DemandStatus[] =
+  ['issued', 'part_paid', 'overdue'] as const
+
 // Section 20 consultation statuses (state machine)
 export const SECTION_20_STATUSES = [
   'stage1_pending',
