@@ -101,6 +101,14 @@ Spec reference: PropOS Handoff Document v1.1 — Section 6.2.
 
 ---
 
+## 2026-05-09 — PropertyDetailPage tabbed layout with `?tab=` URL sync
+
+**Context:** Phase 3 introduces per-property bank accounts. The existing PropertyDetailPage was a single scrolling page (property info → units → leaseholders); adding bank accounts as a fourth stacked section would push every later addition (compliance items per property, S20 consultations per property, transactions per property) further down the page.
+**Decision:** Refactor PropertyDetailPage into a Radix-Tabs interface (Overview / Units / Leaseholders to start, Bank Accounts added in commit 1b). Active tab is mirrored into the `?tab=` search param so refresh and direct linking preserve location. Default tab (`overview`) is omitted from the URL (`/properties/:id` rather than `/properties/:id?tab=overview`) to keep the canonical URL clean.
+**Rationale:** Tabs scale better than a single scroll for a per-property dashboard; URL sync is required so deep links from emails / reports / activity feeds can point at a specific property tab. A new `Tabs` primitive wrapper was added to `/components/ui` per the abstraction-layer rule (DECISIONS 2026-05-07). Future per-property tabs (Bank Accounts, Compliance, Section 20) extend `TAB_VALUES` and add a `<TabsContent>` block — no other surgery required.
+
+---
+
 ## 2026-05-07 — pgAudit enablement approach
 
 **Context:** Section 4 requires pgAudit to be enabled before any data migration. The Supabase hosted project does not allow direct superuser SQL for extension creation on the free tier in some cases.

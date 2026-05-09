@@ -1,10 +1,19 @@
 /**
  * @file PropertyDetailPage.tsx
- * @description Property detail view — property metadata, units CRUD, leaseholders CRUD.
+ * @description Property detail view — tabbed interface containing property metadata,
+ * units CRUD, and leaseholders CRUD. Future tabs (bank accounts, compliance, etc.)
+ * are added by extending TAB_VALUES and rendering an additional TabsContent block.
  * Responsible for: displaying property info; full create/read/update/delete for
- *                  units and leaseholders within the property.
- * NOT responsible for: financial data (Financial module), compliance items (Compliance module),
- *                      works orders (Works module), apportionment schedules (Financial module).
+ *                  units and leaseholders within the property; tab navigation.
+ * NOT responsible for: financial data CRUD logic (delegated to BankAccountsTab and
+ *                      future financial-module tab components), compliance items
+ *                      (Compliance module), works orders (Works module), apportionment
+ *                      schedules (Financial module).
+ *
+ * Tabs and URL sync:
+ *   - Active tab is mirrored into the `?tab=` search param so refreshes and direct
+ *     links (e.g. /properties/:id?tab=units) preserve the user's location.
+ *   - Default tab is 'overview'. Unknown values fall back to the default.
  *
  * Edge cases handled:
  *   - FK constraint on unit delete (unit has leaseholders / demands / works orders) → inline error
@@ -16,11 +25,14 @@
  *   - Ground rent review: basis + date only shown when ground_rent_pa is set
  */
 import { useEffect, useState, useCallback } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useSearchParams } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import { PageHeader } from '@/components/shared/PageHeader'
-import { Card, CardContent, CardHeader, CardTitle, Button, Badge, Input } from '@/components/ui'
+import {
+  Card, CardContent, CardHeader, CardTitle, Button, Badge, Input,
+  Tabs, TabsList, TabsTrigger, TabsContent,
+} from '@/components/ui'
 import { ChevronLeft, Plus, Pencil, Trash2, X, AlertTriangle } from 'lucide-react'
 import { cn, formatDate } from '@/lib/utils'
 import { formatPounds } from '@/lib/money'
@@ -32,6 +44,11 @@ type Leaseholder = Database['public']['Tables']['leaseholders']['Row']
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const SELECT_CLASS = 'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm'
+
+/** Tab identifiers — also used as the `?tab=` search-param values for deep linking. */
+const TAB_VALUES = ['overview', 'units', 'leaseholders'] as const
+type TabValue = typeof TAB_VALUES[number]
+const DEFAULT_TAB: TabValue = 'overview'
 
 /** Ground rent review basis options per the schema */
 const GROUND_RENT_REVIEW_OPTIONS = [
@@ -48,6 +65,23 @@ const GROUND_RENT_REVIEW_OPTIONS = [
 export function PropertyDetailPage() {
   const { id } = useParams<{ id: string }>()
   const firmContext = useAuthStore(s => s.firmContext)
+
+  // Tab state mirrored into `?tab=`. Unknown / missing values fall back to DEFAULT_TAB
+  // so a hand-crafted bad URL still renders something sensible.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const rawTab = searchParams.get('tab')
+  const tab: TabValue = (TAB_VALUES as readonly string[]).includes(rawTab ?? '')
+    ? (rawTab as TabValue)
+    : DEFAULT_TAB
+  function handleTabChange(next: string) {
+    const nextTab = (TAB_VALUES as readonly string[]).includes(next) ? next : DEFAULT_TAB
+    setSearchParams(prev => {
+      const params = new URLSearchParams(prev)
+      if (nextTab === DEFAULT_TAB) params.delete('tab')
+      else params.set('tab', nextTab)
+      return params
+    }, { replace: true })
+  }
 
   const [property,    setProperty]    = useState<Property | null>(null)
   const [units,       setUnits]       = useState<Unit[]>([])
@@ -145,28 +179,37 @@ export function PropertyDetailPage() {
         </Link>
       </PageHeader>
 
-      <div className="p-8 space-y-8">
+      <div className="p-8">
+        <Tabs value={tab} onValueChange={handleTabChange}>
+          <TabsList>
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="units">Units</TabsTrigger>
+            <TabsTrigger value="leaseholders">Leaseholders</TabsTrigger>
+          </TabsList>
 
-        {/* ── Property details ───────────────────────────────────────────── */}
-        <Card>
-          <CardHeader><CardTitle className="text-base">Property details</CardTitle></CardHeader>
-          <CardContent>
-            <dl className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
-              <Field label="Type"          value={property.property_type} />
-              <Field label="Total units"   value={property.total_units?.toString() ?? '—'} />
-              <Field label="Build year"    value={property.build_year?.toString() ?? '—'} />
-              <Field label="Listed status" value={property.listed_status ?? '—'} />
-              <Field label="Freeholder"    value={property.freeholder_name ?? '—'} />
-              <Field label="Managing since" value={formatDate(property.managing_since)} />
-              <Field label="HRB"           value={property.is_hrb ? 'Yes — BSA applies' : 'No'} />
-              {property.is_hrb && <Field label="Storeys"    value={property.storey_count?.toString() ?? '—'} />}
-              {property.is_hrb && <Field label="Height (m)" value={property.height_metres?.toString() ?? '—'} />}
-            </dl>
-          </CardContent>
-        </Card>
+          {/* ── Overview tab ─────────────────────────────────────────────── */}
+          <TabsContent value="overview" className="space-y-8">
+            <Card>
+              <CardHeader><CardTitle className="text-base">Property details</CardTitle></CardHeader>
+              <CardContent>
+                <dl className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+                  <Field label="Type"          value={property.property_type} />
+                  <Field label="Total units"   value={property.total_units?.toString() ?? '—'} />
+                  <Field label="Build year"    value={property.build_year?.toString() ?? '—'} />
+                  <Field label="Listed status" value={property.listed_status ?? '—'} />
+                  <Field label="Freeholder"    value={property.freeholder_name ?? '—'} />
+                  <Field label="Managing since" value={formatDate(property.managing_since)} />
+                  <Field label="HRB"           value={property.is_hrb ? 'Yes — BSA applies' : 'No'} />
+                  {property.is_hrb && <Field label="Storeys"    value={property.storey_count?.toString() ?? '—'} />}
+                  {property.is_hrb && <Field label="Height (m)" value={property.height_metres?.toString() ?? '—'} />}
+                </dl>
+              </CardContent>
+            </Card>
+          </TabsContent>
 
-        {/* ── Units ─────────────────────────────────────────────────────── */}
-        <section aria-label="Units">
+          {/* ── Units tab ────────────────────────────────────────────────── */}
+          <TabsContent value="units" className="space-y-8">
+            <section aria-label="Units">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold">Units ({units.length})</h2>
             <Button size="sm" onClick={() => { setEditingUnit(null); setShowUnitForm(true) }}>
@@ -286,10 +329,12 @@ export function PropertyDetailPage() {
               </tbody>
             </table>
           </div>
-        </section>
+            </section>
+          </TabsContent>
 
-        {/* ── Leaseholders ──────────────────────────────────────────────── */}
-        <section aria-label="Leaseholders">
+          {/* ── Leaseholders tab ─────────────────────────────────────────── */}
+          <TabsContent value="leaseholders" className="space-y-8">
+            <section aria-label="Leaseholders">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-3">
               <h2 className="font-semibold">
@@ -456,8 +501,9 @@ export function PropertyDetailPage() {
               </tbody>
             </table>
           </div>
-        </section>
-
+            </section>
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   )

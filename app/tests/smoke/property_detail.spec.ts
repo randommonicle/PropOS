@@ -23,6 +23,18 @@ async function goToFirstProperty(page: Parameters<typeof test>[1]) {
   await expect(page.getByRole('main').getByRole('heading').first()).toBeVisible()
 }
 
+// ── Helper: switch to a specific tab on the property detail page ─────────────
+// PropertyDetailPage uses Radix Tabs (`?tab=overview|units|leaseholders`).
+// Tab triggers expose role=tab, so we click the named tab and wait for the
+// active panel to be present before returning.
+async function goToTab(
+  page: Parameters<typeof test>[1],
+  tab: 'Overview' | 'Units' | 'Leaseholders',
+) {
+  await page.getByRole('tab', { name: tab }).click()
+  await expect(page.getByRole('tab', { name: tab })).toHaveAttribute('data-state', 'active')
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Units
 // ════════════════════════════════════════════════════════════════════════════
@@ -35,13 +47,17 @@ test.describe('Property detail — units', () => {
 
   test('units section heading and add button are visible', async ({ page }) => {
     await goToFirstProperty(page)
-    await expect(page.getByRole('main').getByText(/^Units/)).toBeVisible()
+    await goToTab(page, 'Units')
+    // Scope to <h2> — the tab trigger also has text "Units" so a plain text match
+    // would resolve to two elements under strict mode.
+    await expect(page.getByRole('heading', { name: /^Units/ })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Add unit' })).toBeVisible()
   })
 
   test('unit create round-trip', async ({ page }) => {
     const marker = `Smoke U${Date.now()}`
     await goToFirstProperty(page)
+    await goToTab(page, 'Units')
 
     await page.getByRole('button', { name: 'Add unit' }).click()
     await expect(page.getByRole('heading', { name: 'New unit' })).toBeVisible()
@@ -64,6 +80,7 @@ test.describe('Property detail — units', () => {
     const original = `Smoke U Edit ${Date.now()}`
     const updated  = `Smoke U Edited ${Date.now()}`
     await goToFirstProperty(page)
+    await goToTab(page, 'Units')
 
     // Create a unit to edit
     await page.getByRole('button', { name: 'Add unit' }).click()
@@ -90,6 +107,7 @@ test.describe('Property detail — units', () => {
   test('unit delete shows inline confirmation then removes row', async ({ page }) => {
     const marker = `Smoke U Del ${Date.now()}`
     await goToFirstProperty(page)
+    await goToTab(page, 'Units')
 
     // Create a unit to delete
     await page.getByRole('button', { name: 'Add unit' }).click()
@@ -140,7 +158,9 @@ test.describe('Property detail — leaseholders', () => {
 
   test('leaseholders section heading and add button are visible', async ({ page }) => {
     await goToFirstProperty(page)
-    await expect(page.getByRole('main').getByText(/^Leaseholders/)).toBeVisible()
+    await goToTab(page, 'Leaseholders')
+    // Scope to <h2> — the tab trigger also has text "Leaseholders".
+    await expect(page.getByRole('heading', { name: /^Leaseholders/ })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Add leaseholder' })).toBeVisible()
   })
 
@@ -150,12 +170,14 @@ test.describe('Property detail — leaseholders', () => {
     await goToFirstProperty(page)
 
     // Create a unit first so the leaseholder form has a unit to assign to
+    await goToTab(page, 'Units')
     await page.getByRole('button', { name: 'Add unit' }).click()
     await page.getByLabel('Unit ref *').fill(unitRef)
     await page.getByRole('button', { name: 'Save unit' }).click()
     await expect(page.getByRole('main').getByText(unitRef)).toBeVisible()
 
     // Now create a leaseholder
+    await goToTab(page, 'Leaseholders')
     await page.getByRole('button', { name: 'Add leaseholder' }).click()
     await expect(page.getByRole('heading', { name: 'New leaseholder' })).toBeVisible()
 
@@ -176,10 +198,12 @@ test.describe('Property detail — leaseholders', () => {
     await goToFirstProperty(page)
 
     // Create unit + leaseholder
+    await goToTab(page, 'Units')
     await page.getByRole('button', { name: 'Add unit' }).click()
     await page.getByLabel('Unit ref *').fill(unitRef)
     await page.getByRole('button', { name: 'Save unit' }).click()
 
+    await goToTab(page, 'Leaseholders')
     await page.getByRole('button', { name: 'Add leaseholder' }).click()
     await page.getByLabel('Unit *').selectOption({ label: unitRef })
     await page.getByLabel(/Full name \*/).fill(original)
@@ -208,10 +232,12 @@ test.describe('Property detail — leaseholders', () => {
     await goToFirstProperty(page)
 
     // Create unit + leaseholder
+    await goToTab(page, 'Units')
     await page.getByRole('button', { name: 'Add unit' }).click()
     await page.getByLabel('Unit ref *').fill(unitRef)
     await page.getByRole('button', { name: 'Save unit' }).click()
 
+    await goToTab(page, 'Leaseholders')
     await page.getByRole('button', { name: 'Add leaseholder' }).click()
     await page.getByLabel('Unit *').selectOption({ label: unitRef })
     await page.getByLabel(/Full name \*/).fill(lhName)
@@ -239,10 +265,12 @@ test.describe('Property detail — leaseholders', () => {
     await goToFirstProperty(page)
 
     // Create unit + leaseholder
+    await goToTab(page, 'Units')
     await page.getByRole('button', { name: 'Add unit' }).click()
     await page.getByLabel('Unit ref *').fill(unitRef)
     await page.getByRole('button', { name: 'Save unit' }).click()
 
+    await goToTab(page, 'Leaseholders')
     await page.getByRole('button', { name: 'Add leaseholder' }).click()
     await page.getByLabel('Unit *').selectOption({ label: unitRef })
     await page.getByLabel(/Full name \*/).fill(lhName)
@@ -259,4 +287,31 @@ test.describe('Property detail — leaseholders', () => {
     await expect(page.getByRole('cell', { name: lhName, exact: true })).not.toBeVisible()
   })
 
+})
+
+// ════════════════════════════════════════════════════════════════════════════
+// Tab navigation
+// PropertyDetailPage uses Radix Tabs with `?tab=` URL sync. The default tab is
+// 'overview'; switching tabs updates the URL and shows the corresponding panel.
+// ════════════════════════════════════════════════════════════════════════════
+test.describe('Property detail — tabs', () => {
+  test('lands on overview by default and shows property details', async ({ page }) => {
+    await goToFirstProperty(page)
+    await expect(page.getByRole('tab', { name: 'Overview' })).toHaveAttribute('data-state', 'active')
+    await expect(page.getByRole('main').getByText('Property details')).toBeVisible()
+  })
+
+  test('clicking Units tab reveals the units add button and updates the URL', async ({ page }) => {
+    await goToFirstProperty(page)
+    await goToTab(page, 'Units')
+    await expect(page.getByRole('button', { name: 'Add unit' })).toBeVisible()
+    await expect(page).toHaveURL(/\?tab=units/)
+  })
+
+  test('clicking Leaseholders tab reveals the leaseholders add button and updates the URL', async ({ page }) => {
+    await goToFirstProperty(page)
+    await goToTab(page, 'Leaseholders')
+    await expect(page.getByRole('button', { name: 'Add leaseholder' })).toBeVisible()
+    await expect(page).toHaveURL(/\?tab=leaseholders/)
+  })
 })
