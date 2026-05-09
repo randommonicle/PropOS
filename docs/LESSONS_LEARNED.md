@@ -42,6 +42,29 @@ Updated at the end of each build phase per Section 6.2.
 
 ---
 
-## Phase 2 — Compliance & Works (not yet started)
+## Phase 2 — Compliance & Works (completed 2026-05-09)
+
+### What worked well
+
+- **Edge Function redirect pattern** — When the Supabase gateway overrides `Content-Type` headers (making it impossible to return rendered HTML directly from an Edge Function), the correct approach is for the function to return a `302 redirect` to a React route. The React app is served by Vercel with correct headers and the user sees a proper page. This pattern also cleanly separates concerns: the function does DB work, the React app handles presentation.
+- **`scripts/deploy-functions.bat`** — Baking the `--no-verify-jwt` flag into a deploy script eliminates the recurring problem of JWT verification resetting on redeploy. Any critical deploy flags belong in version-controlled scripts, not in documentation.
+- **`supabase migration repair`** — When a project's migrations were previously applied via the SQL editor (not the CLI), the `schema_migrations` history table is empty. `supabase migration repair <versions> --status applied` marks them as applied without re-running DDL. Safe and precise.
+- **`matchMedia` for OS-adaptive theming** — Using `window.matchMedia('(prefers-color-scheme: dark)')` with an event listener gives live dark/light switching without any CSS framework dependency, ideal for standalone pages (like the contractor response page) that are independent of the app's theme system.
+- **Pill tag toggle for multi-select** — Replacing a freeform comma-separated text input with pill toggles from a database-driven list significantly improves data quality (no slug normalisation needed, no typos, consistent display names) while being just as fast to use.
+- **`afterAll` cleanup in Playwright specs** — Adding Supabase JS client cleanup in `afterAll` hooks keeps the database clean between sessions without needing a manual reset. FK-safe deletion order (child before parent) must be explicitly managed.
+
+### What didn't work / friction points
+
+- **Supabase gateway Content-Type override** — The gateway adds `x-content-type-options: nosniff` and overrides custom `Content-Type` headers set in Edge Function responses. Attempts to return `text/html` directly from the function resulted in the raw source code being shown to the user in the browser. Only the redirect approach works reliably.
+- **`config.toml verify_jwt = false` not picked up by CLI** — Despite being the documented approach, the Supabase CLI ignores this setting during deploy and resets JWT verification to on. The Dashboard toggle has the same problem. `--no-verify-jwt` on the deploy command is the only method that persists. This cost significant debugging time.
+- **Resend free tier — 1 domain limit** — The free tier only allows one sender domain. Since `bengraham.uk` was already the personal portfolio domain, a dedicated domain (`proposdigital.uk`) was required for PropOS. This triggered a Resend Pro upgrade. Budget accordingly for any project sending from a custom domain.
+- **`trade_categories` table not in generated types** — Since the table was added via a manual migration after the initial type generation, `supabase.from('trade_categories')` returned `never` in TypeScript. Workaround: `(supabase as any).from('trade_categories')` with a local interface. The permanent fix is to regenerate types (requires Docker) or maintain the hand-written `database.ts` file.
+- **FK-safe deletion order in Playwright cleanup** — Straggler leaseholders from old test runs (non-smoke names but attached to smoke units) caused FK constraint errors when deleting units. Required a two-step approach: first delete leaseholders by unit_id (found via unit_ref pattern), then delete units.
+
+### What would be done differently
+
+- Register the email sending domain before building the dispatch feature, not after. Resend domain verification (DNS propagation + DKIM) takes time and blocks end-to-end testing of the email flow.
+- Set up Docker from the start so `supabase gen types typescript` works. Hand-maintaining `database.ts` accumulates drift risk, especially when adding new tables like `trade_categories`.
+- Write a `scripts/deploy-functions.bat` (or Makefile target) from the very first Edge Function deployment — never rely on remembering flags.
 
 ---

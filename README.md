@@ -2,7 +2,7 @@
 
 Full-stack property management operating system for RICS-regulated managing agents, SME agents, and RMC/RTM self-managed blocks.
 
-**Status:** Phase 2 complete and verified ✓ — Phase 3 (Financial) next
+**Status:** Phase 2 complete + UX polish ✓ — Phase 3 (Financial) next
 
 ---
 
@@ -68,14 +68,21 @@ PropOS/
 
 ## Database
 
-**19 migrations** covering all 26 tables, RLS policies, storage security, infrastructure hardening, and units DELETE policy. Run via:
+**21 migrations** (00001–00021) covering all 26 tables + trade_categories, RLS policies, dispatch engine, storage security, infrastructure hardening. Apply new migrations via the Supabase CLI:
 
-```cmd
-set DB_URL=postgresql://postgres:<password>@db.<ref>.supabase.co:5432/postgres
-node supabase/run_migrations.mjs
+```bash
+SUPABASE_ACCESS_TOKEN=<token> npx supabase link --project-ref <ref>
+SUPABASE_ACCESS_TOKEN=<token> npx supabase db push
 ```
 
-Run each `set` on a **separate line** in cmd.exe (see [Known gotchas](#known-gotchas)).
+If previous migrations were applied via the SQL editor (not CLI), the remote history table will be empty. Repair it first so only new migrations are pushed:
+
+```bash
+SUPABASE_ACCESS_TOKEN=<token> npx supabase migration repair 00001 00002 ... 00020 --status applied
+SUPABASE_ACCESS_TOKEN=<token> npx supabase db push
+```
+
+> **Note:** Run `set` on **separate lines** in cmd.exe (see [Known gotchas](#known-gotchas)). In bash, use `VAR=value command` inline syntax.
 
 ### First-time setup (manual steps required)
 
@@ -144,7 +151,7 @@ Full decision log: [`docs/DECISIONS.md`](docs/DECISIONS.md)
 | Phase | Status | Deliverables |
 |-------|--------|-------------|
 | 1 — Foundation | ✅ Complete | Schema, auth, CRUD, document vault, dashboard |
-| 2 — Compliance & Works | ✅ Complete | Compliance tracker (RAG), insurance tracker, contractor register, works orders, dispatch engine (token), Section 20 state machine |
+| 2 — Compliance & Works | ✅ Complete | Compliance tracker (RAG), insurance tracker, contractor register + managed trade categories, works orders, dispatch engine (token + email), contractor response page, Section 20 full lifecycle, UX polish |
 | 3 — Financial | Planned | Service charge demands, budgets, bank reconciliation |
 | 4 — Portals | Planned | Leaseholder portal, maintenance requests |
 | 5 — BSA Module | Planned | Golden Thread, mandatory occurrences, HRB register |
@@ -154,9 +161,27 @@ Full decision log: [`docs/DECISIONS.md`](docs/DECISIONS.md)
 
 ---
 
+## Deploying Edge Functions
+
+```bash
+# Both functions — use the .bat script which bakes in the correct flags
+scripts\deploy-functions.bat
+
+# Or manually:
+npx supabase functions deploy dispatch-engine --project-ref <ref>
+npx supabase functions deploy contractor-response --project-ref <ref> --no-verify-jwt
+```
+
+> **`--no-verify-jwt` is mandatory** for `contractor-response`. The `config.toml` setting and the Supabase Dashboard toggle both reset on every CLI redeploy. The CLI flag is the only reliable method.
+
+---
+
 ## Known gotchas
 
-- **cmd.exe `&&` gives env vars trailing spaces:** `set VAR=value && next` sets VAR to `value ` (with space). Always use separate lines.
+- **cmd.exe `&&` gives env vars trailing spaces:** `set VAR=value && next` sets VAR to `value ` (with space). Always use separate lines in cmd.exe.
 - **JWT hook requires manual Dashboard registration** — cannot be automated via SQL. Must be enabled in Auth → Hooks UI.
 - **Supabase CLI type gen requires Docker** — types in `app/src/types/database.ts` are hand-written. Run migrations first, then update types manually when schema changes.
 - **`Relationships: []` required in supabase-js v2.49+** — every table type must include this field or TypeScript infers insert/select as `never`.
+- **`contractor-response` must be deployed with `--no-verify-jwt`** — see Edge Functions section above.
+- **New tables not in generated types** — use `(supabase as any).from('table_name')` with a local interface until types are regenerated (e.g. `trade_categories`).
+- **Supabase migration history empty after SQL-editor-only workflow** — use `supabase migration repair` to mark pre-existing migrations as applied before running `db push` for the first time.
