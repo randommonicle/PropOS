@@ -36,6 +36,7 @@ import {
 import { ChevronLeft, Plus, Pencil, Trash2, X, AlertTriangle } from 'lucide-react'
 import { cn, formatDate } from '@/lib/utils'
 import { formatPounds } from '@/lib/money'
+import { BankAccountsTab } from '@/components/modules/financial'
 import type { Database } from '@/types/database'
 
 type Property    = Database['public']['Tables']['properties']['Row']
@@ -46,7 +47,7 @@ type Leaseholder = Database['public']['Tables']['leaseholders']['Row']
 const SELECT_CLASS = 'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm'
 
 /** Tab identifiers — also used as the `?tab=` search-param values for deep linking. */
-const TAB_VALUES = ['overview', 'units', 'leaseholders'] as const
+const TAB_VALUES = ['overview', 'units', 'leaseholders', 'bank-accounts'] as const
 type TabValue = typeof TAB_VALUES[number]
 const DEFAULT_TAB: TabValue = 'overview'
 
@@ -185,6 +186,7 @@ export function PropertyDetailPage() {
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="units">Units</TabsTrigger>
             <TabsTrigger value="leaseholders">Leaseholders</TabsTrigger>
+            <TabsTrigger value="bank-accounts">Bank accounts</TabsTrigger>
           </TabsList>
 
           {/* ── Overview tab ─────────────────────────────────────────────── */}
@@ -502,6 +504,11 @@ export function PropertyDetailPage() {
             </table>
           </div>
             </section>
+          </TabsContent>
+
+          {/* ── Bank accounts tab ────────────────────────────────────────── */}
+          <TabsContent value="bank-accounts" className="space-y-8">
+            <BankAccountsTab firmId={firmContext!.firmId} propertyId={property.id} />
           </TabsContent>
         </Tabs>
       </div>

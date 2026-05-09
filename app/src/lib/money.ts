@@ -51,3 +51,43 @@ export function addP(a: number, b: number): number {
 export function subtractP(a: number, b: number): number {
   return a - b
 }
+
+/**
+ * Parse a free-form user-entered money string into integer pence.
+ * Returns null for empty / invalid input. Accepts:
+ *   "1234"      → 123400
+ *   "1234.56"   → 123456
+ *   "1,234.56"  → 123456
+ *   "  £12.5 "  → 1250
+ *   "-50"       → -5000   (only when allowNegative)
+ * Rejects more than two decimal places, alpha characters, multiple decimals.
+ */
+export function parseMoneyInput(
+  raw: string,
+  opts: { allowNegative?: boolean } = {}
+): number | null {
+  if (raw == null) return null
+  const cleaned = raw.replace(/[£\s,]/g, '')
+  if (cleaned === '' || cleaned === '-' || cleaned === '.') return null
+  const sign = opts.allowNegative ? '-?' : ''
+  const re = new RegExp(`^${sign}\\d+(\\.\\d{1,2})?$`)
+  if (!re.test(cleaned)) return null
+  const pounds = parseFloat(cleaned)
+  if (!Number.isFinite(pounds)) return null
+  return Math.round(pounds * 100)
+}
+
+/**
+ * Format integer pence for display inside a text input — no currency symbol,
+ * always 2dp, locale-grouped. Negative values render with a leading minus.
+ *   123456  → "1,234.56"
+ *   -5000   → "-50.00"
+ *   null    → ""
+ */
+export function formatPenceForInput(pence: number | null | undefined): string {
+  if (pence == null) return ''
+  return (pence / 100).toLocaleString('en-GB', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+}

@@ -101,6 +101,59 @@ Spec reference: PropOS Handoff Document v1.1 — Section 6.2.
 
 ---
 
+## 2026-05-09 — MoneyInput contract: integer-pence canonical value
+
+**Context:** Phase 3 introduces money capture across many forms (bank accounts, demands, transactions, budget line items, S20 quotes, dispensation costs). Per Section 6.4 of the spec, all financial amounts are stored and computed as integer pence in memory — never floats. A single shared input component is needed so that contract is enforced at the UI boundary, not on a form-by-form basis.
+
+**Decision:** All money capture goes through `app/src/components/shared/MoneyInput.tsx`. Contract:
+- `value: number | null` — integer pence. `null` represents an empty / unspecified amount.
+- `onChange(pence: number | null)` — fires on every keystroke that produces a parseable value; invalid mid-typing strokes emit `null`.
+- On blur, the visible draft is reformatted to canonical `1,234.56` (en-GB locale, 2dp).
+- The `£` prefix is rendered visually outside the `<input>` so it never enters the value.
+- `allowNegative` defaults to `false`. Bank balances and dual-auth thresholds are non-negative; later `transactions` flows will pass `allowNegative` for refunds.
+- `disabled` triggers the read-only render path used for trigger-maintained values like `bank_accounts.current_balance` (spec §5.6).
+- Parsing helper `parseMoneyInput()` and display helper `formatPenceForInput()` live in `lib/money.ts` so they remain testable independently of the React tree.
+
+**Rationale:** Centralising integer-pence conversion at the component boundary eliminates the dominant class of financial bug — locale-formatted strings being parsed inconsistently and floating-point arithmetic creeping into intermediate values. Every form that captures money MUST use `MoneyInput`; raw `<Input type="number">` for currency is a code-review block.
+
+---
+
+## 2026-05-09 — Bank account deletion policy: RICS Client Money + TPI audit retention
+
+**Context:** `bank_accounts` represents accounts that hold (or have held) leaseholder client money. Hard-deleting a bank account that ever held client money breaches RICS Client Money Rules (Rule 4.7, audit-trail evidence required for inspection) and the TPI Code of Practice §5 (financial record retention). HMRC also imposes a 6-year retention floor on financial records.
+
+**Decision:** Hard-delete is permitted ONLY when ALL of the following hold:
+1. Foreign-key check passes (no transactions, payment_authorisations, demands, or statement imports reference the account) — enforced by Postgres FK + 23503 surfacing in the UI.
+2. `last_reconciled_at IS NULL` — the account has never been reconciled.
+3. `closed_date IS NULL` — the account has not been formally closed.
+
+Any other state forces the PM down the **Mark as Closed** path: edit the account → untick `Active`. The system auto-stamps `closed_date = today` if not supplied. Closed accounts retain their full row history. The deletion-attempt error message names RICS Rule 4.7 and TPI §5 explicitly so the PM understands the constraint is regulatory, not technical.
+
+**Rationale:** Soft-delete-by-default for any record tied to client money is the only path that survives both an FCA referral (via the firm's regulator) and a RICS Client Money inspection. The FK guard alone is necessary but not sufficient — a never-reconciled account with zero transactions is the only safe hard-delete window.
+
+---
+
+## 2026-05-09 — Open Banking integration: forward-looking schema and consent design
+
+**Context:** The product brief requires PropOS to pull bank-account data from client accounts in real time so PMs see live balances and transactions without manual statement upload. In the UK this is FCA-regulated as Account Information Services (AIS) under PSD2 / FCA PERG 15; PropOS would either operate as an FCA-authorised AISP or (more likely) integrate with a regulated provider such as TrueLayer, Tink, or GoCardless Bank Account Data. RICS Client Money Rules and the TPI Code both interact with this — pulled data is accepted as a primary record only when the provider's audit chain is preserved.
+
+**Decision:** Open Banking is **out of scope for Phase 3 commit 1b**. No schema changes in this commit. When the integration lands (Phase 6 candidate), the `bank_accounts` table will gain:
+- `ob_provider TEXT` — registered AISP we routed through (e.g. `truelayer`, `tink`, `gocardless_bad`).
+- `ob_external_account_id TEXT` — provider's stable identifier.
+- `ob_consent_id UUID` — FK into a new `open_banking_consents` table managing the 90-day FCA consent lifecycle.
+- `last_ob_sync_at TIMESTAMPTZ`, `ob_sync_status TEXT` — observability for the polling worker.
+
+A separate `open_banking_consents` table will track consent grant / renewal / revocation events with full audit trail (who, when, scope, expiry). The bank statement import pipeline (already specified in Phase 3 sub-deliverable) is adapted so its `bank_statement_imports` rows can be sourced from either CSV/OFX upload OR an Open Banking sync — the matching engine downstream does not care.
+
+UX commitments for the Phase 6 work, recorded here so 1b doesn't accidentally pre-judge them:
+- Negative `current_balance` values must render with an amber badge plus a "Negative — investigate" tooltip on the BankAccountsTab list (a real-world but rare edge case; cf. handover note).
+- Manual `current_balance` override is never allowed in the UI — the trigger and / or the OB sync owns the value.
+- The PM-facing UI must surface an immutable provenance label on each transaction: "Source: Statement upload (CSV) / Open Banking (TrueLayer) / Manual entry" so RICS inspections can distinguish primary records from manually keyed ones.
+
+**Rationale:** Recording the constraint set now prevents 1b from baking in patterns (manual balance entry, hand-edited transaction history, unbounded delete) that would have to be ripped out when the integration lands. The schema fields are not added in this commit because (a) we have no provider chosen and the field set will firm up at integration time, and (b) Section 6.4 of the spec forbids speculative migrations.
+
+---
+
 ## 2026-05-09 — PropertyDetailPage tabbed layout with `?tab=` URL sync
 
 **Context:** Phase 3 introduces per-property bank accounts. The existing PropertyDetailPage was a single scrolling page (property info → units → leaseholders); adding bank accounts as a fourth stacked section would push every later addition (compliance items per property, S20 consultations per property, transactions per property) further down the page.
