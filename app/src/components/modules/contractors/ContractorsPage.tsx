@@ -3,19 +3,33 @@
  * @description Contractor register — approved trade contractors for the firm.
  * Responsible for: contractor CRUD, trade categories, insurance expiry tracking.
  * NOT responsible for: works order dispatch (WorksPage), portal access management.
+ *
+ * Trade categories are managed via the trade_categories lookup table (migration 00021).
+ * Values stored on contractors.trade_categories are display names (e.g. "Electrical"),
+ * not slugs. A legacy fallback map handles old slug-based records.
  */
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { Button, Card, CardContent, Badge, Input } from '@/components/ui'
-import { HardHat, Plus, Search, Pencil, X } from 'lucide-react'
+import { HardHat, Plus, Search, Pencil, X, ChevronDown, ChevronUp, Settings2 } from 'lucide-react'
 import { formatDate, daysUntil } from '@/lib/utils'
 import type { Database } from '@/types/database'
 
 type Contractor = Database['public']['Tables']['contractors']['Row']
 
-const TRADE_LABELS: Record<string, string> = {
+// trade_categories is not yet in the generated Database types
+interface TradeCat {
+  id: string
+  firm_id: string
+  name: string
+  active: boolean
+  sort_order: number
+}
+
+// Fallback map for old slug-based values still in the database
+const LEGACY_LABELS: Record<string, string> = {
   electrical: 'Electrical',
   gas: 'Gas',
   plumbing: 'Plumbing',
@@ -32,14 +46,37 @@ const TRADE_LABELS: Record<string, string> = {
   other: 'Other',
 }
 
+function tradeLabel(t: string): string {
+  return LEGACY_LABELS[t] ?? t
+}
+
+// trade_categories is not yet in the generated Database types — use any cast
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const tradeCatTable = () => (supabase as any).from('trade_categories')
+
 export function ContractorsPage() {
   const firmContext = useAuthStore(s => s.firmContext)
+  const role = firmContext?.role ?? ''
+  const isAdmin = role === 'admin' || role === 'director'
+
   const [contractors, setContractors] = useState<Contractor[]>([])
   const [filtered, setFiltered] = useState<Contractor[]>([])
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState<Contractor | null>(null)
+  const [tradeCategories, setTradeCategories] = useState<TradeCat[]>([])
+  const [showAdminPanel, setShowAdminPanel] = useState(false)
+
+  const loadTrades = useCallback(async () => {
+    if (!firmContext?.firmId) return
+    const { data } = await tradeCatTable()
+      .select('*')
+      .eq('firm_id', firmContext.firmId)
+      .order('sort_order')
+      .order('name')
+    setTradeCategories((data as TradeCat[]) ?? [])
+  }, [firmContext?.firmId])
 
   const load = useCallback(async () => {
     if (!firmContext?.firmId) return
@@ -53,7 +90,7 @@ export function ContractorsPage() {
     setLoading(false)
   }, [firmContext?.firmId])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { load(); loadTrades() }, [load, loadTrades])
 
   useEffect(() => {
     const q = search.toLowerCase()
@@ -62,12 +99,13 @@ export function ContractorsPage() {
         c.company_name.toLowerCase().includes(q) ||
         (c.contact_name ?? '').toLowerCase().includes(q) ||
         (c.email ?? '').toLowerCase().includes(q) ||
-        (c.trade_categories ?? []).some(t => (TRADE_LABELS[t] ?? t).toLowerCase().includes(q))
+        (c.trade_categories ?? []).some(t => tradeLabel(t).toLowerCase().includes(q))
       )
     )
   }, [search, contractors])
 
   const approved = contractors.filter(c => c.approved && c.active).length
+  const activeCategories = tradeCategories.filter(t => t.active)
 
   return (
     <div>
@@ -85,6 +123,7 @@ export function ContractorsPage() {
           <ContractorForm
             firmId={firmContext!.firmId}
             initial={editing}
+            tradeCategories={activeCategories}
             onSaved={() => { setShowForm(false); setEditing(null); load() }}
             onCancel={() => { setShowForm(false); setEditing(null) }}
           />
@@ -145,7 +184,7 @@ export function ContractorsPage() {
                         <div className="flex flex-wrap gap-1 max-w-xs">
                           {(c.trade_categories ?? []).slice(0, 3).map(t => (
                             <Badge key={t} variant="secondary" className="text-xs">
-                              {TRADE_LABELS[t] ?? t}
+                              {tradeLabel(t)}
                             </Badge>
                           ))}
                           {(c.trade_categories ?? []).length > 3 && (
@@ -190,33 +229,142 @@ export function ContractorsPage() {
             </table>
           </div>
         )}
+
+        {/* ── Admin: trade category management ─────────────────────────────── */}
+        {isAdmin && (
+          <div className="mt-8">
+            <button
+              className="flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+              onClick={() => setShowAdminPanel(p => !p)}
+            >
+              <Settings2 className="h-4 w-4" />
+              Manage trade categories
+              {showAdminPanel
+                ? <ChevronUp className="h-3.5 w-3.5" />
+                : <ChevronDown className="h-3.5 w-3.5" />}
+            </button>
+            {showAdminPanel && (
+              <TradeAdminPanel
+                firmId={firmContext!.firmId}
+                categories={tradeCategories}
+                onChanged={loadTrades}
+              />
+            )}
+          </div>
+        )}
       </div>
     </div>
   )
 }
 
-// ── Contractor Form ─────────────────────────────────────────────────────────
-function ContractorForm({ firmId, initial, onSaved, onCancel }: {
+// ── Trade Admin Panel ────────────────────────────────────────────────────────
+function TradeAdminPanel({ firmId, categories, onChanged }: {
+  firmId: string
+  categories: TradeCat[]
+  onChanged: () => void
+}) {
+  const [newName, setNewName] = useState('')
+  const [adding, setAdding] = useState(false)
+  const [toggling, setToggling] = useState<string | null>(null)
+  const [addError, setAddError] = useState<string | null>(null)
+
+  async function handleAdd() {
+    const name = newName.trim()
+    if (!name) return
+    setAdding(true)
+    setAddError(null)
+    const { error: err } = await tradeCatTable().insert({
+      firm_id: firmId,
+      name,
+      sort_order: 99,
+    })
+    setAdding(false)
+    if (err) { setAddError(err.message); return }
+    setNewName('')
+    onChanged()
+  }
+
+  async function handleToggle(cat: TradeCat) {
+    setToggling(cat.id)
+    await tradeCatTable().update({ active: !cat.active }).eq('id', cat.id)
+    setToggling(null)
+    onChanged()
+  }
+
+  return (
+    <Card className="mt-3 max-w-xl">
+      <CardContent className="p-5">
+        <p className="text-xs text-muted-foreground mb-4">
+          Click a category to toggle it on or off. Inactive categories can&apos;t be newly assigned
+          but remain on any contractor that already has them.
+        </p>
+        <div className="flex flex-wrap gap-2 mb-5">
+          {categories.length === 0 && (
+            <p className="text-xs text-muted-foreground">No categories yet — add one below.</p>
+          )}
+          {categories.map(cat => (
+            <button
+              key={cat.id}
+              type="button"
+              disabled={toggling === cat.id}
+              onClick={() => handleToggle(cat)}
+              className={[
+                'px-3 py-1 rounded-full text-xs font-medium border transition-colors',
+                cat.active
+                  ? 'bg-primary text-primary-foreground border-primary'
+                  : 'bg-background text-muted-foreground border-input hover:border-foreground',
+                toggling === cat.id ? 'opacity-50 cursor-wait' : 'cursor-pointer',
+              ].join(' ')}
+            >
+              {cat.name}{!cat.active && ' (inactive)'}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-2 items-center">
+          <Input
+            placeholder="New trade category…"
+            value={newName}
+            onChange={e => setNewName(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleAdd()}
+            className="max-w-xs"
+          />
+          <Button size="sm" onClick={handleAdd} disabled={adding || !newName.trim()}>
+            {adding ? 'Adding…' : 'Add'}
+          </Button>
+        </div>
+        {addError && <p className="text-xs text-destructive mt-2">{addError}</p>}
+      </CardContent>
+    </Card>
+  )
+}
+
+// ── Contractor Form ──────────────────────────────────────────────────────────
+function ContractorForm({ firmId, initial, tradeCategories, onSaved, onCancel }: {
   firmId: string
   initial: Contractor | null
+  tradeCategories: TradeCat[]
   onSaved: () => void
   onCancel: () => void
 }) {
   const [values, setValues] = useState({
-    company_name: initial?.company_name ?? '',
-    contact_name: initial?.contact_name ?? '',
-    email: initial?.email ?? '',
-    phone: initial?.phone ?? '',
-    address: initial?.address ?? '',
-    trade_categories_text: (initial?.trade_categories ?? []).join(', '),
-    insurance_expiry: initial?.insurance_expiry ?? '',
-    gas_safe_number: initial?.gas_safe_number ?? '',
+    company_name:        initial?.company_name ?? '',
+    contact_name:        initial?.contact_name ?? '',
+    email:               initial?.email ?? '',
+    phone:               initial?.phone ?? '',
+    address:             initial?.address ?? '',
+    insurance_expiry:    initial?.insurance_expiry ?? '',
+    gas_safe_number:     initial?.gas_safe_number ?? '',
     electrical_approval: initial?.electrical_approval ?? '',
-    preferred_order: String(initial?.preferred_order ?? 99),
-    approved: initial?.approved ?? false,
-    active: initial?.active ?? true,
-    notes: initial?.notes ?? '',
+    preferred_order:     String(initial?.preferred_order ?? 99),
+    approved:            initial?.approved ?? false,
+    active:              initial?.active ?? true,
+    notes:               initial?.notes ?? '',
   })
+
+  // Selected trade categories — stored as display names (e.g. "Electrical")
+  const [selectedTrades, setSelectedTrades] = useState<Set<string>>(
+    new Set(initial?.trade_categories ?? [])
+  )
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -224,32 +372,34 @@ function ContractorForm({ firmId, initial, onSaved, onCancel }: {
     setValues(v => ({ ...v, [field]: value }))
   }
 
+  function toggleTrade(name: string) {
+    setSelectedTrades(prev => {
+      const next = new Set(prev)
+      next.has(name) ? next.delete(name) : next.add(name)
+      return next
+    })
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setSaving(true)
     setError(null)
 
-    // Parse comma-separated trade categories → normalised slug array
-    const tradeCategories = values.trade_categories_text
-      .split(',')
-      .map(s => s.trim().toLowerCase().replace(/\s+/g, '_'))
-      .filter(Boolean)
-
     const payload = {
-      firm_id: firmId,
-      company_name: values.company_name,
-      contact_name: values.contact_name || null,
-      email: values.email || null,
-      phone: values.phone || null,
-      address: values.address || null,
-      trade_categories: tradeCategories.length > 0 ? tradeCategories : null,
-      insurance_expiry: values.insurance_expiry || null,
-      gas_safe_number: values.gas_safe_number || null,
+      firm_id:             firmId,
+      company_name:        values.company_name,
+      contact_name:        values.contact_name || null,
+      email:               values.email || null,
+      phone:               values.phone || null,
+      address:             values.address || null,
+      trade_categories:    selectedTrades.size > 0 ? [...selectedTrades] : null,
+      insurance_expiry:    values.insurance_expiry || null,
+      gas_safe_number:     values.gas_safe_number || null,
       electrical_approval: values.electrical_approval || null,
-      preferred_order: parseInt(values.preferred_order, 10) || 99,
-      approved: values.approved,
-      active: values.active,
-      notes: values.notes || null,
+      preferred_order:     parseInt(values.preferred_order, 10) || 99,
+      approved:            values.approved,
+      active:              values.active,
+      notes:               values.notes || null,
     }
 
     let err: { message: string } | null = null
@@ -296,17 +446,38 @@ function ContractorForm({ firmId, initial, onSaved, onCancel }: {
             <label htmlFor="co-insexpiry" className="text-sm font-medium">Insurance expiry</label>
             <Input id="co-insexpiry" type="date" value={values.insurance_expiry} onChange={e => set('insurance_expiry', e.target.value)} />
           </div>
-          <div className="col-span-2 space-y-1">
-            <label htmlFor="co-trades" className="text-sm font-medium">
-              Trade categories <span className="text-muted-foreground font-normal">(comma-separated)</span>
-            </label>
-            <Input
-              id="co-trades"
-              value={values.trade_categories_text}
-              onChange={e => set('trade_categories_text', e.target.value)}
-              placeholder="e.g. electrical, roofing, general maintenance"
-            />
+
+          {/* Trade category tag toggles */}
+          <div className="col-span-2 space-y-2">
+            <label className="text-sm font-medium">Trade categories</label>
+            {tradeCategories.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No active trade categories. An admin can configure them via &ldquo;Manage trade categories&rdquo; below the contractor list.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {tradeCategories.map(cat => {
+                  const selected = selectedTrades.has(cat.name)
+                  return (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => toggleTrade(cat.name)}
+                      className={[
+                        'px-3 py-1 rounded-full text-xs font-medium border transition-colors',
+                        selected
+                          ? 'bg-primary text-primary-foreground border-primary'
+                          : 'bg-background text-muted-foreground border-input hover:border-foreground',
+                      ].join(' ')}
+                    >
+                      {cat.name}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
           </div>
+
           <div className="space-y-1">
             <label htmlFor="co-gas" className="text-sm font-medium">Gas Safe number</label>
             <Input id="co-gas" value={values.gas_safe_number} onChange={e => set('gas_safe_number', e.target.value)} />
@@ -321,7 +492,9 @@ function ContractorForm({ firmId, initial, onSaved, onCancel }: {
             />
           </div>
           <div className="space-y-1">
-            <label htmlFor="co-order" className="text-sm font-medium">Dispatch priority <span className="text-muted-foreground font-normal">(1 = first)</span></label>
+            <label htmlFor="co-order" className="text-sm font-medium">
+              Dispatch priority <span className="text-muted-foreground font-normal">(1 = first)</span>
+            </label>
             <Input
               id="co-order"
               type="number"

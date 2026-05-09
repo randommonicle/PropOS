@@ -540,6 +540,20 @@ function WorksOrderForm({ firmId, properties, contractors, initial, onSaved, onC
 }
 
 // ── Dispatch Modal ──────────────────────────────────────────────────────────
+// Priority → auto deadline hours
+const PRIORITY_DEADLINE_HOURS: Record<string, number> = {
+  emergency: 4,
+  high:      24,
+  normal:    48,
+  low:       120,
+}
+const PRIORITY_DEADLINE_HINT: Record<string, string> = {
+  emergency: 'Emergency priority — 4 hours',
+  high:      'High priority — 24 hours',
+  normal:    'Normal priority — 48 hours',
+  low:       'Low priority — 5 days',
+}
+
 function DispatchModal({ firmId, order, contractors, onDispatched, onCancel }: {
   firmId: string
   order: WorksOrder
@@ -552,8 +566,9 @@ function DispatchModal({ firmId, order, contractors, onDispatched, onCancel }: {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Default response deadline: 48 hours from now
-  const defaultDeadline = new Date(Date.now() + 48 * 60 * 60 * 1000)
+  // Default response deadline driven by works order priority
+  const priorityHours = PRIORITY_DEADLINE_HOURS[order.priority] ?? 48
+  const defaultDeadline = new Date(Date.now() + priorityHours * 60 * 60 * 1000)
   const [deadlineDate, setDeadlineDate] = useState(defaultDeadline.toISOString().split('T')[0])
 
   async function handleDispatch() {
@@ -655,6 +670,9 @@ function DispatchModal({ firmId, order, contractors, onDispatched, onCancel }: {
               min={new Date().toISOString().split('T')[0]}
               onChange={e => setDeadlineDate(e.target.value)}
             />
+            <p className="text-xs text-muted-foreground">
+              Auto-set for {PRIORITY_DEADLINE_HINT[order.priority] ?? 'normal priority — 48 hours'}. You can adjust this.
+            </p>
           </div>
           <p className="text-xs text-muted-foreground bg-muted/40 rounded px-3 py-2">
             <strong>Note:</strong> An accept/decline email will be sent to the contractor&apos;s
