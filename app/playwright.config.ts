@@ -64,6 +64,13 @@ export default defineConfig({
       name: 'setup-pm',
       testMatch: '**/auth-pm.setup.ts',
     },
+    // 1i.3 — three new test users for the function-split + multi-role smokes.
+    // accounts: queues invoices for payment / requests payment_payee_setup.
+    // senior_pm: PM-tier with override authority (re-open closed periods).
+    // auditor: read-only across financial + audit-log tables.
+    { name: 'setup-accounts',  testMatch: '**/auth-accounts.setup.ts' },
+    { name: 'setup-senior-pm', testMatch: '**/auth-senior-pm.setup.ts' },
+    { name: 'setup-auditor',   testMatch: '**/auth-auditor.setup.ts' },
     // Step 2: run smoke tests using saved admin auth state by default.
     {
       name: 'smoke',
@@ -71,7 +78,7 @@ export default defineConfig({
         ...devices['Desktop Chrome'],
         storageState: 'tests/.auth/user.json',
       },
-      dependencies: ['setup', 'setup-pm'],
+      dependencies: ['setup', 'setup-pm', 'setup-accounts', 'setup-senior-pm', 'setup-auditor'],
     },
   ],
 })

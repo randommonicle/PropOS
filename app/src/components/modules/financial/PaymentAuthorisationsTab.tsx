@@ -48,7 +48,7 @@ import { formatPounds, poundsToP } from '@/lib/money'
 import { hasAdminRole, hasPmRole, type PaymentAuthStatus, type CriticalActionType } from '@/lib/constants'
 import type {
   Database, ProposedTransaction, ProposedClosure,
-  ProposedRicsDesignationToggle, ProposedAction,
+  ProposedRicsDesignationToggle, ProposedPayeeSetup, ProposedAction,
 } from '@/types/database'
 
 type PaymentAuth         = Database['public']['Tables']['payment_authorisations']['Row']
@@ -123,10 +123,18 @@ export function PaymentAuthorisationsTab({
         (txns ?? []).map(t => [t.id, t.bank_account_id]),
       )
     }
-    // Both ProposedTransaction and ProposedClosure carry bank_account_id; this
-    // single accessor works for every action_type.
+    // Filter by property:
+    //  - payment_release / close_bank_account / toggle_rics_designation:
+    //    proposed (or the linked transaction) carries a bank_account_id;
+    //    keep the row only when that account is on this property.
+    //  - payment_payee_setup: contractor-scoped, not bank-account-scoped.
+    //    Show on every property tab so admins have a UI surface to authorise
+    //    (firm-level PA dashboard is FORWARD: PROD-GATE — Phase 5 admin
+    //    module). PoC compromise; not regulatory-load-bearing.
     const filtered = (paRes.data ?? []).filter(p => {
-      const proposedAccId = (p.proposed as ProposedAction | null)?.bank_account_id
+      if (p.action_type === 'payment_payee_setup') return true
+      const proposedAccId =
+        (p.proposed as Exclude<ProposedAction, ProposedPayeeSetup> | null)?.bank_account_id
       const accId = proposedAccId
         ?? (p.transaction_id ? txnAccountById.get(p.transaction_id) : undefined)
       return accId ? propertyAccountIds.has(accId) : false
@@ -150,7 +158,30 @@ export function PaymentAuthorisationsTab({
 
     const actionType = (pa.action_type as CriticalActionType) ?? 'payment_release'
     if (actionType === 'payment_release') {
-      await authorisePayment(pa, pa.proposed as ProposedTransaction)
+      // Segregation gate: payee-setter ≠ release-authoriser. If the proposed
+      // links to a contractor whose bank details were stamped by THIS admin
+      // (contractors.approved_by === userId), block the authorise. RICS
+      // Client money handling — segregation of duties.
+      const txn = pa.proposed as ProposedTransaction
+      const contractorId = txn.contractor_id ?? null
+      if (contractorId) {
+        const { data: contractor } = await supabase
+          .from('contractors')
+          .select('approved_by, company_name')
+          .eq('id', contractorId)
+          .single()
+        if (contractor?.approved_by && contractor.approved_by === userId) {
+          setActionErr(
+            `Segregation of duties: you stamped ${contractor.company_name ?? 'this contractor'}'s ` +
+            'bank details (payee_setup), so a different admin must authorise the ' +
+            'payment_release. RICS Client money handling — segregation of duties.',
+          )
+          return
+        }
+      }
+      await authorisePayment(pa, txn)
+    } else if (actionType === 'payment_payee_setup') {
+      await authorisePayeeSetup(pa, pa.proposed as ProposedPayeeSetup)
     } else if (actionType === 'close_bank_account') {
       await authoriseClosure(pa, pa.proposed as ProposedClosure)
     } else if (actionType === 'toggle_rics_designation') {
@@ -159,6 +190,61 @@ export function PaymentAuthorisationsTab({
       setActionErr(`Unknown action type: ${actionType}`)
       return
     }
+  }
+
+  /**
+   * Authorise a payment_payee_setup PA — the function-split first leg.
+   * Effect: stamp `contractors.approved_by` + `approved_at` with the
+   * authorising user; flip `contractors.approved=true`; commit the proposed
+   * bank details onto the contractor row. Then mark the PA authorised.
+   *
+   * Self-auth guard already applied by handleAuthorise. The same admin who
+   * stamps `approved_by` here will subsequently be BLOCKED from authorising
+   * a payment_release whose proposed.contractor_id = this contractor — see
+   * the gate in handleAuthorise above. RICS Client money handling —
+   * segregation of duties.
+   */
+  async function authorisePayeeSetup(pa: PaymentAuth, proposed: ProposedPayeeSetup) {
+    if (!userId) return
+    if (!proposed.contractor_id) {
+      setActionErr('Proposed payee-setup has no contractor_id.'); return
+    }
+    const bd = proposed.proposed_bank_details
+    // Bank details aren't first-class columns on contractors today (PoC).
+    // Stash on `notes` as a structured prefix so the smoke can assert
+    // round-trip; production model lands in the data-integrity pass with
+    // dedicated encrypted columns. FORWARD: PROD-GATE — contractor bank
+    // details schema (encryption + first-class columns).
+    const bdLine = JSON.stringify({
+      sort_code: bd.sort_code, account_number: bd.account_number,
+      account_name: bd.account_name, iban: bd.iban, bic: bd.bic,
+    })
+    const contractorPatch = {
+      approved:    true,
+      approved_by: userId,
+      approved_at: new Date().toISOString(),
+      notes:       `[PAYEE_SETUP_AUTHORISED ${new Date().toISOString()}] ${bdLine}`,
+    }
+
+    const { error: cErr } = await supabase
+      .from('contractors').update(contractorPatch).eq('id', proposed.contractor_id)
+    if (cErr) {
+      setActionErr(`Failed to stamp contractor: ${cErr.message}`); return
+    }
+    const { error: paErr } = await supabase
+      .from('payment_authorisations').update({
+        status:        'authorised',
+        authorised_by: userId,
+        authorised_at: new Date().toISOString(),
+      }).eq('id', pa.id)
+    if (paErr) {
+      setActionErr(
+        `Contractor stamped but PA link failed: ${paErr.message}. Refresh — ` +
+        'authorise again to retry the link.',
+      )
+      return
+    }
+    await load()
   }
 
   async function authorisePayment(pa: PaymentAuth, proposed: ProposedTransaction) {
@@ -441,13 +527,20 @@ function PaymentAuthRow({
   const status = pa.status as PaymentAuthStatus
   const actionType = (pa.action_type as CriticalActionType) ?? 'payment_release'
   const proposed = pa.proposed
-  const accountId = proposed?.bank_account_id ?? null
+  const isClosure       = actionType === 'close_bank_account'
+  const isRicsToggle    = actionType === 'toggle_rics_designation'
+  const isPayeeSetup    = actionType === 'payment_payee_setup'
+  const isPayment       = !isClosure && !isRicsToggle && !isPayeeSetup
+  // ProposedPayeeSetup has no bank_account_id (payee setup is contractor-
+  // scoped, not bank-account-scoped); read the regular accessor only for
+  // the action types that DO carry it.
+  const accountId = isPayeeSetup
+    ? null
+    : (proposed as { bank_account_id?: string } | null)?.bank_account_id ?? null
   const accountName = accountId ? (accountMap.get(accountId) ?? '—') : '—'
-  const isClosure = actionType === 'close_bank_account'
-  const isRicsToggle = actionType === 'toggle_rics_designation'
-  const isPayment = !isClosure && !isRicsToggle
   const txnProposed = isPayment ? (proposed as ProposedTransaction | null) : null
   const ricsProposed = isRicsToggle ? (proposed as ProposedRicsDesignationToggle | null) : null
+  const payeeProposed = isPayeeSetup ? (proposed as ProposedPayeeSetup | null) : null
   const amount = Number(txnProposed?.amount ?? 0)
   const demand = txnProposed?.demand_id ? demandMap.get(txnProposed.demand_id) : null
   const isRequester = !!currentUserId && pa.requested_by === currentUserId
@@ -472,6 +565,11 @@ function PaymentAuthRow({
           ) : isRicsToggle ? (
             <span className="text-amber-700 font-medium">
               RICS designation: {accountName} → {ricsProposed?.new_value ? 'Designate' : 'Remove'}
+            </span>
+          ) : isPayeeSetup ? (
+            <span className="text-blue-700 font-medium">
+              Payee setup: {payeeProposed?.contractor_label ?? '—'}
+              {payeeProposed?.is_re_approval ? ' (re-approval)' : ''}
             </span>
           ) : (
             txnProposed?.description ?? '—'

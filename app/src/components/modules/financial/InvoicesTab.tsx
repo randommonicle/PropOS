@@ -66,7 +66,8 @@ import { formatDate, slugToTitle, todayISODate } from '@/lib/utils'
 import { poundsToP, pToPounds, formatPounds } from '@/lib/money'
 import {
   AI_CONFIDENCE_REVIEW_THRESHOLD, INVOICE_STATUSES,
-  STORAGE_BUCKETS, hasAdminRole, hasPmRole, type InvoiceStatus, type UserRole,
+  STORAGE_BUCKETS, hasAnyFinanceRole, hasPmRole, hasSeniorPmRole,
+  type InvoiceStatus, type UserRole,
 } from '@/lib/constants'
 import {
   isInvoiceTerminal, statusOptionsForRole,
@@ -104,11 +105,7 @@ export function InvoicesTab({
 }) {
   const userId = useAuthStore(s => s.user?.id ?? null)
   const roles = useAuthStore(s => s.firmContext?.roles ?? null)
-  // Legacy singular role still read for the InvoiceDrawer subcomponent and
-  // statusTransitions helpers — they keep the singular signature through
-  // 1i.3 phase 2; refactor to roles[] lands in phase 3.
-  const role = useAuthStore(s => s.firmContext?.role ?? null)
-  const canFinance = hasAdminRole(roles)
+  const canFinance = hasAnyFinanceRole(roles)
 
   const [invoices, setInvoices] = useState<Invoice[]>([])
   const [accounts, setAccounts] = useState<BankAccount[]>([])
@@ -229,7 +226,7 @@ export function InvoicesTab({
     return <div className="text-sm text-muted-foreground">Loading invoices…</div>
   }
 
-  const showRoleHint = !canFinance && hasPmRole(roles)
+  const showRoleHint = !canFinance && (hasPmRole(roles) || hasSeniorPmRole(roles))
 
   return (
     <section aria-label="Invoices">
@@ -282,7 +279,6 @@ export function InvoicesTab({
           propertyId={propertyId}
           accounts={accounts}
           initial={editing}
-          role={role}
           roles={roles}
           userId={userId}
           onSaved={async () => { setShowForm(false); setEditing(null); await load() }}
@@ -423,16 +419,12 @@ function ConfidencePill({
 // Invoice form (create + edit drawer)
 // ════════════════════════════════════════════════════════════════════════════
 function InvoiceForm({
-  firmId, propertyId, accounts, initial, role, roles, userId, onSaved, onCancel,
+  firmId, propertyId, accounts, initial, roles, userId, onSaved, onCancel,
 }: {
   firmId: string
   propertyId: string
   accounts: BankAccount[]
   initial: Invoice | null
-  /** Legacy singular role — passed through to statusTransitions helpers
-   *  (kept on the singular signature through 1i.3 phase 2). */
-  role: UserRole | null
-  /** Multi-role array — used by hasAdminRole for the queue-for-payment gate. */
   roles: UserRole[] | null
   userId: string | null
   onSaved: () => void | Promise<void>
@@ -544,7 +536,7 @@ function InvoiceForm({
   async function handleConfirm() {
     if (!initial) return
     setActionErr(null)
-    const reject = rejectionMessageForTransition(role, status, 'approved')
+    const reject = rejectionMessageForTransition(roles, status, 'approved')
     if (reject) { setActionErr(reject); return }
     const { error } = await supabase.from('invoices').update({
       status: 'approved',
@@ -560,7 +552,7 @@ function InvoiceForm({
   async function handleStatusChange(next: InvoiceStatus) {
     if (!initial) return
     setActionErr(null)
-    const reject = rejectionMessageForTransition(role, status, next)
+    const reject = rejectionMessageForTransition(roles, status, next)
     if (reject) { setActionErr(reject); return }
     const { error } = await supabase.from('invoices').update({ status: next }).eq('id', initial.id)
     if (error) { setActionErr(error.message); return }
@@ -573,9 +565,10 @@ function InvoiceForm({
   async function handleQueueForPayment() {
     if (!initial || !userId) return
     setActionErr(null)
-    if (!hasAdminRole(roles)) {
+    if (!hasAnyFinanceRole(roles)) {
       setActionErr(
-        'Queue-for-payment is restricted to admin staff. RICS Client money handling — segregation of duties.',
+        'Queue-for-payment is restricted to staff with finance authority ' +
+        '(admin or accounts). RICS Client money handling — segregation of duties.',
       )
       return
     }
@@ -607,6 +600,10 @@ function InvoiceForm({
       reference:        initial.invoice_number,
       demand_id:        null,
       invoice_id:       initial.id,
+      // Populate the contractor link when the invoice has one — drives the
+      // payee-setter ≠ release-authoriser segregation gate on PA authorise.
+      // RICS Client money handling — segregation of duties.
+      contractor_id:    initial.contractor_id ?? null,
     }
 
     const { error: paErr } = await supabase.from('payment_authorisations').insert({
@@ -631,8 +628,8 @@ function InvoiceForm({
   }
 
   const statusOptions = useMemo(
-    () => statusOptionsForRole(role, status).filter(s => s !== 'queued'),  // queue is its own button
-    [role, status],
+    () => statusOptionsForRole(roles, status).filter(s => s !== 'queued'),  // queue is its own button
+    [roles, status],
   )
 
   return (
@@ -774,7 +771,7 @@ function InvoiceForm({
             )}
 
             {/* Finance Queue-for-payment (approved → queued). */}
-            {status === 'approved' && hasAdminRole(roles) && (
+            {status === 'approved' && hasAnyFinanceRole(roles) && (
               <>
                 <div className="space-y-1">
                   <label htmlFor="queue-account" className="text-sm font-medium">

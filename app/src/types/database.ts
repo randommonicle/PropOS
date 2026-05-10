@@ -30,6 +30,15 @@ export interface ProposedTransaction {
    * created from TransactionsTab. See DECISIONS 2026-05-10 — Invoices CRUD.
    */
   invoice_id?:      string | null
+  /**
+   * Optional link to a contractor. Populated by InvoicesTab.handleQueueForPayment
+   * from invoice.contractor_id when the invoice references a managed contractor.
+   * Drives the payee-setter ≠ release-authoriser segregation gate (1i.3): on
+   * authorise the handler rejects if the authoriser is the same user who
+   * stamped contractors.approved_by for this contractor. RICS Client money
+   * handling — segregation of duties.
+   */
+  contractor_id?:   string | null
 }
 
 /**
@@ -54,11 +63,44 @@ export interface ProposedRicsDesignationToggle {
   new_value:       boolean
 }
 
+/**
+ * Snapshot for a proposed contractor payee-setup when the authorisation is
+ * pending (action_type='payment_payee_setup'). On authorise the application
+ * updates `contractors.approved=true`, stamps `approved_by` (the authoriser)
+ * and `approved_at`, and writes the proposed bank details onto the contractor
+ * row. The same admin then becomes ineligible to authorise a future
+ * `payment_release` to that contractor (segregation of duties — RICS
+ * Client money handling 1st ed., Oct 2022 reissue). 1i.3 / 00029.
+ *
+ * Triggered by ContractorsPage on contractor add and on bank-detail edit:
+ * editing the bank details flips contractor.approved=false until a fresh
+ * payment_payee_setup PA is authorised.
+ */
+export interface ProposedPayeeSetup {
+  contractor_id:        string
+  /** Free-text label rendered in the PA list — defaults to contractor.company_name. */
+  contractor_label:     string
+  /** Sort-code, account-number, etc. Snapshot of the bank details that
+   *  the authorise flow will commit onto the contractor row. PoC-grade
+   *  shape; production will lock down + encrypt at rest (FORWARD). */
+  proposed_bank_details: {
+    sort_code?:      string | null
+    account_number?: string | null
+    account_name?:   string | null
+    iban?:           string | null
+    bic?:            string | null
+  }
+  /** True when the PA was raised by the bank-detail edit path (vs the
+   *  contractor-add path). Drives copy in the PA card. */
+  is_re_approval:       boolean
+}
+
 /** Discriminated union over the proposed JSONB column shapes. */
 export type ProposedAction =
   | ProposedTransaction
   | ProposedClosure
   | ProposedRicsDesignationToggle
+  | ProposedPayeeSetup
 
 export interface Database {
   public: {
@@ -814,6 +856,11 @@ export interface Database {
           electrical_approval: string | null
           preferred_order: number | null
           approved: boolean
+          /** Stamped by the payment_payee_setup PA authoriser (1i.3 / 00029).
+           *  Drives the payee-setter ≠ release-authoriser segregation gate. */
+          approved_by: string | null
+          /** Timestamp of the payment_payee_setup PA authorisation. */
+          approved_at: string | null
           active: boolean
           portal_access: boolean
           rating: number | null
@@ -835,6 +882,8 @@ export interface Database {
           electrical_approval?: string | null
           preferred_order?: number | null
           approved?: boolean
+          approved_by?: string | null
+          approved_at?: string | null
           active?: boolean
           portal_access?: boolean
           rating?: number | null
