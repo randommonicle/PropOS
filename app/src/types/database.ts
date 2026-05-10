@@ -24,6 +24,19 @@ export interface ProposedTransaction {
   demand_id:        string | null
 }
 
+/**
+ * Snapshot for a proposed bank-account closure when the authorisation is
+ * pending (action_type='close_bank_account'). On authorise the application
+ * updates bank_accounts.is_active=false + closed_date. See migration 00023.
+ */
+export interface ProposedClosure {
+  bank_account_id: string
+  closed_date:     string
+}
+
+/** Discriminated union over the proposed JSONB column shapes. */
+export type ProposedAction = ProposedTransaction | ProposedClosure
+
 export interface Database {
   public: {
     Tables: {
@@ -517,7 +530,8 @@ export interface Database {
           rejection_reason: string | null
           status: string
           authority_limit: number | null
-          proposed: ProposedTransaction | null
+          action_type: string
+          proposed: ProposedAction | null
           created_at: string
         }
         Insert: {
@@ -533,7 +547,8 @@ export interface Database {
           rejection_reason?: string | null
           status?: string
           authority_limit?: number | null
-          proposed?: ProposedTransaction | null
+          action_type?: string
+          proposed?: ProposedAction | null
           created_at?: string
         }
         Update: Partial<Omit<Database['public']['Tables']['payment_authorisations']['Insert'], 'id'>>

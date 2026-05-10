@@ -130,6 +130,19 @@ export const PAYMENT_AUTH_STATUSES = [
 ] as const
 export type PaymentAuthStatus = (typeof PAYMENT_AUTH_STATUSES)[number]
 
+/**
+ * Critical action types — discriminator on payment_authorisations.action_type.
+ * 'payment'              — original 1f flow; uses transaction_id + proposed (ProposedTransaction).
+ * 'close_bank_account'   — 1g flow; uses proposed (ProposedClosure); on authorise the
+ *                          application updates bank_accounts.is_active=false + closed_date.
+ * Future: 'toggle_rics_designation' (1g.5).
+ */
+export const CRITICAL_ACTION_TYPES = [
+  'payment',
+  'close_bank_account',
+] as const
+export type CriticalActionType = (typeof CRITICAL_ACTION_TYPES)[number]
+
 // Section 20 consultation statuses (state machine)
 export const SECTION_20_STATUSES = [
   'stage1_pending',

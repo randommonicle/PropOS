@@ -453,4 +453,88 @@ test.describe('Property detail — payment authorisations', () => {
       .from('demands').select('status').eq('id', dem.id).single()
     expect(refreshed?.status).toBe('issued')
   })
+
+  // ── Closure dual-auth (1g) ───────────────────────────────────────────────
+
+  test('closure PA — pending row renders as a closure entry, not a payment', async ({ page }) => {
+    const { prop, account } = await seedScenario()
+    const pmId = await resolvePmUserId()
+
+    await supabase.from('payment_authorisations').insert({
+      firm_id: prop.firm_id,
+      requested_by: pmId,
+      status: 'pending',
+      action_type: 'close_bank_account',
+      proposed: { bank_account_id: account.id, closed_date: '2026-05-15' },
+    })
+
+    await page.goto(`/properties/${prop.id}?tab=payment-authorisations`)
+    const row = page.getByRole('main').locator('tr', { has: page.getByText(`Close: ${account.account_name}`) })
+    await expect(row).toBeVisible()
+    // No payment-amount cell content for closure rows.
+    await expect(row.getByText('Pending')).toBeVisible()
+  })
+
+  test('closure authorise — admin authorises, bank_account flips to closed', async ({ page }) => {
+    const { prop, account } = await seedScenario()
+    const pmId = await resolvePmUserId()
+
+    const { data: pa } = await supabase.from('payment_authorisations').insert({
+      firm_id: prop.firm_id,
+      requested_by: pmId,
+      status: 'pending',
+      action_type: 'close_bank_account',
+      proposed: { bank_account_id: account.id, closed_date: '2026-05-20' },
+    }).select('id').single()
+    if (!pa) throw new Error('Failed to seed closure PA')
+
+    await page.goto(`/properties/${prop.id}?tab=payment-authorisations`)
+    const row = page.getByRole('main').locator('tr', { has: page.getByText(`Close: ${account.account_name}`) })
+    await row.getByRole('button', { name: /Authorise request/ }).click()
+    await expect(row.getByRole('button', { name: /Authorise request/ })).toHaveCount(0)
+
+    // Bank account is now closed.
+    const { data: refreshed } = await supabase
+      .from('bank_accounts').select('is_active, closed_date').eq('id', account.id).single()
+    expect(refreshed?.is_active).toBe(false)
+    expect(refreshed?.closed_date).toBe('2026-05-20')
+
+    // PA row authorised, transaction_id stays null (closure isn't a transaction).
+    const { data: refreshedPa } = await supabase
+      .from('payment_authorisations').select('status, transaction_id').eq('id', pa.id).single()
+    expect(refreshedPa?.status).toBe('authorised')
+    expect(refreshedPa?.transaction_id).toBeNull()
+  })
+
+  test('PM-driven UI — Request closure button creates a closure PA', async ({ browser }) => {
+    // This test runs as the property_manager (not admin) to exercise the
+    // request-closure UX. Uses the PM storage state saved by auth-pm.setup.ts.
+    const context = await browser.newContext({ storageState: 'tests/.auth/pm-user.json' })
+    const page = await context.newPage()
+    try {
+      const { prop, account } = await seedScenario()
+
+      await page.goto(`/properties/${prop.id}?tab=bank-accounts`)
+      const row = page.getByRole('main').locator('tr', { has: page.getByText(account.account_name) })
+      await row.getByRole('button', { name: `Request closure ${account.account_name}` }).click()
+      // Inline confirmation row appears.
+      await page.getByRole('button', { name: 'Confirm request' }).click()
+      // Banner appears with the confirmation message.
+      await expect(page.getByTestId('closure-request-notice')).toBeVisible()
+
+      // PA row exists in pending state with the expected action_type.
+      const { data: pa } = await supabase
+        .from('payment_authorisations')
+        .select('action_type, status, proposed, requested_by')
+        .eq('firm_id', prop.firm_id)
+        .order('requested_at', { ascending: false }).limit(1).single()
+      expect(pa?.action_type).toBe('close_bank_account')
+      expect(pa?.status).toBe('pending')
+      expect((pa?.proposed as { bank_account_id?: string } | null)?.bank_account_id).toBe(account.id)
+      const pmId = await resolvePmUserId()
+      expect(pa?.requested_by).toBe(pmId)
+    } finally {
+      await context.close()
+    }
+  })
 })

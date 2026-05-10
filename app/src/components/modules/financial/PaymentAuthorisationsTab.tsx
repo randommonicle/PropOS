@@ -41,8 +41,10 @@ import { Button, Badge, Input } from '@/components/ui'
 import { CheckCircle2, XCircle, X, AlertTriangle, Clock, Lock } from 'lucide-react'
 import { cn, formatDateTime, slugToTitle } from '@/lib/utils'
 import { formatPounds, poundsToP } from '@/lib/money'
-import { isFinanceRole, type PaymentAuthStatus } from '@/lib/constants'
-import type { Database, ProposedTransaction } from '@/types/database'
+import { isFinanceRole, type PaymentAuthStatus, type CriticalActionType } from '@/lib/constants'
+import type {
+  Database, ProposedTransaction, ProposedClosure, ProposedAction,
+} from '@/types/database'
 
 type PaymentAuth         = Database['public']['Tables']['payment_authorisations']['Row']
 type Transaction         = Database['public']['Tables']['transactions']['Row']
@@ -101,8 +103,8 @@ export function PaymentAuthorisationsTab({
     setDemands(demRes.data ?? [])
 
     const propertyAccountIds = new Set((accRes.data ?? []).map(a => a.id))
-    // Need transaction.bank_account_id for authorised rows; fetch the txns
-    // referenced by authorised PAs in this firm.
+    // Need transaction.bank_account_id for authorised payment rows; fetch the
+    // txns referenced by authorised payment-type PAs in this firm.
     const authorisedTxnIds = (paRes.data ?? [])
       .map(p => p.transaction_id)
       .filter((id): id is string => !!id)
@@ -115,8 +117,11 @@ export function PaymentAuthorisationsTab({
         (txns ?? []).map(t => [t.id, t.bank_account_id]),
       )
     }
+    // Both ProposedTransaction and ProposedClosure carry bank_account_id; this
+    // single accessor works for every action_type.
     const filtered = (paRes.data ?? []).filter(p => {
-      const accId = p.proposed?.bank_account_id
+      const proposedAccId = (p.proposed as ProposedAction | null)?.bank_account_id
+      const accId = proposedAccId
         ?? (p.transaction_id ? txnAccountById.get(p.transaction_id) : undefined)
       return accId ? propertyAccountIds.has(accId) : false
     })
@@ -135,10 +140,22 @@ export function PaymentAuthorisationsTab({
     if (!canAuthorise) { setActionErr(ROLE_GATE_TOOLTIP); return }
     if (pa.requested_by === userId) { setActionErr(SELF_AUTH_TOOLTIP); return }
     if (pa.status !== 'pending') { setActionErr('Only pending requests can be authorised.'); return }
-    if (!pa.proposed) { setActionErr('Authorisation has no proposed transaction snapshot.'); return }
+    if (!pa.proposed) { setActionErr('Authorisation has no proposed snapshot.'); return }
 
+    const actionType = (pa.action_type as CriticalActionType) ?? 'payment'
+    if (actionType === 'payment') {
+      await authorisePayment(pa, pa.proposed as ProposedTransaction)
+    } else if (actionType === 'close_bank_account') {
+      await authoriseClosure(pa, pa.proposed as ProposedClosure)
+    } else {
+      setActionErr(`Unknown action type: ${actionType}`)
+      return
+    }
+  }
+
+  async function authorisePayment(pa: PaymentAuth, proposed: ProposedTransaction) {
+    if (!userId) return
     // (a) Insert the transaction from the proposed snapshot.
-    const proposed = pa.proposed
     const { data: inserted, error: txErr } = await supabase
       .from('transactions').insert({
         firm_id:          firmId,
@@ -159,7 +176,6 @@ export function PaymentAuthorisationsTab({
       setActionErr(`Failed to create transaction: ${txErr?.message ?? 'no row returned'}`)
       return
     }
-
     // (b) Link + mark authorised.
     const { error: paErr } = await supabase
       .from('payment_authorisations')
@@ -177,11 +193,45 @@ export function PaymentAuthorisationsTab({
       )
       return
     }
-
-    // Demand auto-status — only relevant if the authorised payment somehow
-    // points at a demand (unusual for payments but supported by the schema).
     if (inserted.demand_id) {
       await applyDemandReceiptStatus(inserted.demand_id)
+    }
+    load()
+  }
+
+  async function authoriseClosure(pa: PaymentAuth, proposed: ProposedClosure) {
+    if (!userId) return
+    // (a) Mark the bank account closed. Trigger-maintained current_balance is
+    // unaffected — no transactions move; we just flip is_active and stamp the
+    // closed_date. The application sets closed_date to the proposed value
+    // (snapshot from the moment of request), not "now", so the audit trail
+    // reflects the requester's intent.
+    const { error: baErr } = await supabase
+      .from('bank_accounts')
+      .update({
+        is_active: false,
+        closed_date: proposed.closed_date,
+      })
+      .eq('id', proposed.bank_account_id)
+    if (baErr) {
+      setActionErr(`Failed to close account: ${baErr.message}`)
+      return
+    }
+    // (b) Mark the PA authorised. transaction_id stays null for closure rows.
+    const { error: paErr } = await supabase
+      .from('payment_authorisations')
+      .update({
+        status: 'authorised',
+        authorised_by: userId,
+        authorised_at: new Date().toISOString(),
+      })
+      .eq('id', pa.id)
+    if (paErr) {
+      setActionErr(
+        `Account closed but PA link failed: ${paErr.message}. Refresh — ` +
+        'the closure landed; the PA row may still show pending until refresh.'
+      )
+      return
     }
     load()
   }
@@ -303,11 +353,14 @@ function PaymentAuthRow({
   onCancelReject: () => void
 }) {
   const status = pa.status as PaymentAuthStatus
+  const actionType = (pa.action_type as CriticalActionType) ?? 'payment'
   const proposed = pa.proposed
   const accountId = proposed?.bank_account_id ?? null
   const accountName = accountId ? (accountMap.get(accountId) ?? '—') : '—'
-  const amount = Number(proposed?.amount ?? 0)
-  const demand = proposed?.demand_id ? demandMap.get(proposed.demand_id) : null
+  const isClosure = actionType === 'close_bank_account'
+  const txnProposed = !isClosure ? (proposed as ProposedTransaction | null) : null
+  const amount = Number(txnProposed?.amount ?? 0)
+  const demand = txnProposed?.demand_id ? demandMap.get(txnProposed.demand_id) : null
   const isRequester = !!currentUserId && pa.requested_by === currentUserId
   const isPending = status === 'pending'
   return (
@@ -322,13 +375,27 @@ function PaymentAuthRow({
           {formatDateTime(pa.requested_at)}
         </td>
         <td className="px-4 py-2">{accountName}</td>
-        <td className="px-4 py-2">{proposed?.description ?? '—'}</td>
-        <td className="px-4 py-2 text-muted-foreground">{proposed?.payee_payer ?? '—'}</td>
+        <td className="px-4 py-2">
+          {isClosure ? (
+            <span className="text-amber-700 font-medium">
+              Close: {accountName}
+            </span>
+          ) : (
+            txnProposed?.description ?? '—'
+          )}
+        </td>
+        <td className="px-4 py-2 text-muted-foreground">
+          {isClosure ? '—' : (txnProposed?.payee_payer ?? '—')}
+        </td>
         <td className="px-4 py-2 text-right font-mono tabular-nums text-destructive">
-          {formatPounds(Math.abs(amount))}
+          {isClosure ? '—' : formatPounds(Math.abs(amount))}
         </td>
         <td className="px-4 py-2 text-xs text-muted-foreground">
-          {demand ? `Demand £${Math.abs(Number(demand.amount)).toFixed(2)}` : '—'}
+          {isClosure
+            ? '—'
+            : demand
+              ? `Demand £${Math.abs(Number(demand.amount)).toFixed(2)}`
+              : '—'}
         </td>
         <td className="px-4 py-2">
           {isPending && (

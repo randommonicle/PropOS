@@ -423,6 +423,27 @@ When the demo-mode toggle ships (likely Phase 6 or 7 depending on when the first
 
 ---
 
+## 2026-05-10 — Closure dual-auth (1g): PM-requests-via-button, admin-authorises-via-PA-tab
+
+**Context:** The 1d.1 interim role gate disabled the `Active` checkbox and the `Delete` button for non-finance users on bank accounts. That closed the immediate compliance hole (PMs couldn't unilaterally close client-money accounts) but left PMs with no path at all — they had to ask an admin to do it manually. 1g delivers the proper second-signer flow: PM clicks **Request closure**, an admin or director (not the requester) authorises via the existing Payment authorisations tab, and the account flips to `is_active=false` only on authorise. Replaces the 1d.1 dead-end with a working request lane.
+
+**Decision:**
+
+1. **Schema migration 00023.** `payment_authorisations` gains `action_type TEXT NOT NULL DEFAULT 'payment'` with a CHECK constraint `IN ('payment', 'close_bank_account')`. Existing rows backfill to `'payment'` via the DEFAULT — 1f's flow is unchanged. Future action types (`toggle_rics_designation` in 1g.5) are added by extending the CHECK constraint.
+2. **Discriminated `proposed` JSONB.** TypeScript-side, the `proposed` column is now typed as `ProposedAction = ProposedTransaction | ProposedClosure`. Both shapes carry `bank_account_id` (so the per-property filter in PaymentAuthorisationsTab works for either action type without branching). DB-level the column stays a single JSONB; the discriminator is `action_type` on the row, not a key inside the JSONB. This keeps the schema small and avoids encoding type info into the payload.
+3. **PM request flow.** BankAccountsTab renders an explicit **Request closure** button (Send icon) on the action column for non-finance roles when the account is currently active. Click → inline confirmation row → submit inserts a `payment_authorisations` row with `action_type='close_bank_account'`, `proposed={ bank_account_id, closed_date: today }`, `requested_by=currentUserId`. The Active checkbox stays disabled (visual cue that closure is gated) but the button gives PMs an actionable path.
+4. **Closure authorise dispatch.** PaymentAuthorisationsTab's `handleAuthorise` switches on `action_type`: `'payment'` runs the existing 1f flow (insert transaction + link); `'close_bank_account'` updates `bank_accounts.is_active=false` + `closed_date=proposed.closed_date` (snapshot-from-request, not "now" — the audit trail records the requester's intent), then marks the PA `authorised` with `transaction_id` left null. The two writes are non-atomic; failure between them leaves the bank closed but the PA still pending — recoverable on refresh + retry-authorise (idempotent because is_active is already false). Atomic wrap deferred to the financial-rules Edge Function.
+5. **Closure rendering in the queue.** When `action_type='close_bank_account'`, the PA row renders distinctly: "Close: \<account name\>" replaces the description column, payee / amount / demand columns show "—". Status badge and the Authorise / Reject / Cancel buttons behave identically. Self-auth guard is unchanged (admin can't authorise own closure request; admin CAN cancel own request).
+6. **Hard-delete still bypasses the auth flow.** Hard-delete is a separate, more-restrictive action that already requires admin/director (1d.1 gate stays in place). Deleting an account that ever held client money is forbidden by the FK / closed_date guards from 1b. The auth flow does NOT cover hard-delete; that path is reserved for the override-of-last-resort case (never-reconciled, never-closed accounts) and stays direct admin/director action without dual-auth. Recorded for visibility.
+7. **`inter_account_transfer` paired-row authorisation** still deferred — same reasoning as 1f.
+8. **`toggle_rics_designation` deferred to 1g.5** — same dispatch pattern, but the proposed snapshot shape is `{ bank_account_id, new_value: false }` (toggling off the designation is the high-stakes case; on→off is what needs gating). Schema CHECK extends to include `'toggle_rics_designation'`. Lands in a small follow-up commit.
+
+**Smokes (3 added).** `closure PA pending row renders as a closure entry`, `closure authorise flips bank_account to closed`, `PM-driven UI Request closure button creates a closure PA` (uses PM storage state from 1f.5). Active count goes from 82 to 85.
+
+**Rationale:** Reusing the `payment_authorisations` table with an `action_type` discriminator is meaningfully simpler than adding a sibling table — fewer migrations, one auth queue UI, and the existing self-auth guard / role guard / cancel-by-requester / immutability rules apply without modification. The shape-divergence between payment and closure authorisations is small enough that branching once in the authorise dispatch + once in the row rendering is cheaper than maintaining two parallel surfaces. The discriminator-on-row pattern leaves room for future action types (RICS-designation, hard-delete override, future Critical Actions) to slot in without further schema churn.
+
+---
+
 ## 2026-05-07 — pgAudit enablement approach
 
 **Context:** Section 4 requires pgAudit to be enabled before any data migration. The Supabase hosted project does not allow direct superuser SQL for extension creation on the free tier in some cases.
