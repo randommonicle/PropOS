@@ -77,24 +77,32 @@ interface PmContext {
 }
 
 async function signInAsPm(): Promise<PmContext> {
-  const { data: auth, error: authErr } = await supabase.auth.signInWithPassword({
-    email: 'pm@propos.local', password: 'PropOS2026!',
-  })
-  if (authErr || !auth.user) throw new Error(`PM sign-in failed: ${authErr?.message}`)
+  return signInAs('pm@propos.local')
+}
 
-  const { data: pmRow, error: pmErr } = await supabase
+async function signInAsAccounts(): Promise<PmContext> {
+  return signInAs('accounts@propos.local')
+}
+
+async function signInAs(email: string): Promise<PmContext> {
+  const { data: auth, error: authErr } = await supabase.auth.signInWithPassword({
+    email, password: 'PropOS2026!',
+  })
+  if (authErr || !auth.user) throw new Error(`${email} sign-in failed: ${authErr?.message}`)
+
+  const { data: row, error: rowErr } = await supabase
     .from('users').select('firm_id, full_name').eq('id', auth.user.id).single()
-  if (pmErr || !pmRow) throw new Error(`PM users row not readable: ${pmErr?.message}`)
+  if (rowErr || !row) throw new Error(`${email} users row not readable: ${rowErr?.message}`)
 
   const { data: prop, error: propErr } = await supabase
-    .from('properties').select('id').eq('firm_id', pmRow.firm_id).limit(1).single()
-  if (propErr || !prop) throw new Error(`No property in PM's firm: ${propErr?.message}`)
+    .from('properties').select('id').eq('firm_id', row.firm_id).limit(1).single()
+  if (propErr || !prop) throw new Error(`No property in ${email} firm: ${propErr?.message}`)
 
   return {
     userId:     auth.user.id,
-    firmId:     pmRow.firm_id,
+    firmId:     row.firm_id,
     propertyId: prop.id,
-    fullName:   pmRow.full_name ?? 'PM',
+    fullName:   row.full_name ?? email.split('@')[0],
   }
 }
 
@@ -438,5 +446,165 @@ test.describe('Security RLS — Tier-1 hardening (commit 1i.1)', () => {
     expect(error).not.toBeNull()
     expect(error?.code).toBe('23514')
     expect(error?.message ?? '').toContain('pa_authorised_pair_chk')
+  })
+})
+
+/**
+ * Cross-phase audit Tier-1 sweep (migration 00030_security_audit_tier1).
+ *
+ * Three smokes that lock the regulatory-load-bearing predicates added by the
+ * audit's 3 CRITICAL findings:
+ *
+ *   C-1-new — accounts user cannot self-authorise a payment_authorisation
+ *             they raised (RLS WITH CHECK self-auth predicate, A-1).
+ *   C-2-new — accounts user cannot stamp contractor.approved_by /
+ *             approved / approved_at (column-grant exclusion, A-2).
+ *   C-3-new — pm user cannot toggle bank_accounts.is_active or
+ *             bank_accounts.rics_designated (column-grant exclusion, A-3).
+ *
+ * All three attack vectors emerged from the 1i.3 widening of is_pm_or_admin()
+ * — see docs/AUDIT_2026-05-10.md §1 for the chained-attack derivation and
+ * docs/HANDOVER_audit_tier1.md for the two-commit decomposition shape.
+ *
+ * Cleanup: contractor rows seeded here are FK-isolated (no PA references
+ * because the attack stops at the column-grant rejection) so an admin sweep
+ * by `company_name LIKE 'Smoke SECRLS%'` is FK-safe.
+ */
+test.describe('Security RLS — cross-phase audit Tier-1 (00030)', () => {
+  test.afterAll(async () => {
+    await supabase.auth.signInWithPassword({ email: 'admin@propos.local', password: 'PropOS2026!' })
+    await supabase.from('contractors').delete().like('company_name', `${PREFIX}%`)
+  })
+
+  // ── A-1 — payment_authorisations self-auth RLS predicate ──────────────────
+
+  test('C-1-new — accounts user cannot self-authorise a payment_authorisation via direct UPDATE', async () => {
+    // Attack chain (Audit §A-1): accounts user raises a PA they could later
+    // try to authorise themselves. Pre-00030, RLS lets the UPDATE through
+    // because is_pm_or_admin() permits accounts and the only gate is the
+    // app-side check at PaymentAuthorisationsTab.handleAuthorise:147.
+    // Post-00030, payment_auth_update WITH CHECK includes
+    // `requested_by IS DISTINCT FROM auth.uid()` — the UPDATE is rejected
+    // with 42501. RICS Client money handling — segregation of duties.
+    //
+    // Both `authorised_at` and `authorised_by` are set so the M-4 paired-or-
+    // neither CHECK doesn't fire first (23514 would mask 42501).
+    const ctx = await signInAsAccounts()
+    const accountId = await seedBankAccount(ctx, 'A1-PA')
+    const txnId     = await seedTransaction(ctx, accountId, {
+      amount: -30, transaction_type: 'payment', description: 'A1-self-auth',
+    })
+
+    const { data: paRow, error: paErr } = await supabase
+      .from('payment_authorisations')
+      .insert({
+        firm_id:        ctx.firmId,
+        transaction_id: txnId,
+        requested_by:   ctx.userId,
+        status:         'pending',
+      })
+      .select('id, requested_by').single()
+    expect(paErr).toBeNull()
+    expect(paRow?.requested_by).toBe(ctx.userId)
+
+    // Attack: same user attempts to authorise their own PA.
+    const { error: updErr } = await supabase
+      .from('payment_authorisations')
+      .update({
+        status:        'authorised',
+        authorised_at: new Date().toISOString(),
+        authorised_by: ctx.userId,
+      })
+      .eq('id', paRow!.id)
+    expect(updErr).not.toBeNull()
+    expect(updErr?.code).toBe('42501')
+
+    // PA still in pending — the WITH CHECK rejected the entire UPDATE.
+    const { data: stillPending } = await supabase
+      .from('payment_authorisations').select('status, authorised_by').eq('id', paRow!.id).single()
+    expect(stillPending?.status).toBe('pending')
+    expect(stillPending?.authorised_by).toBeNull()
+  })
+
+  // ── A-2 — contractors column-grant on approved* ──────────────────────────
+
+  test('C-2-new — accounts user cannot stamp contractor.approved_by via direct UPDATE', async () => {
+    // Attack chain (Audit §A-2): post-1i.3, accounts is in is_pm_or_admin()
+    // so the contractors RLS policy permits UPDATE. The payee-setter ≠
+    // release-authoriser gate reads contractors.approved_by — but pre-00030
+    // any pm-tier user could stamp themselves as approved_by, defeating the
+    // segregation check. Post-00030, `approved`, `approved_by`, `approved_at`
+    // are absent from the column GRANT — direct UPDATE returns 42501.
+    const ctx = await signInAsAccounts()
+
+    const { data: contractorRow, error: insErr } = await supabase
+      .from('contractors')
+      .insert({
+        firm_id:      ctx.firmId,
+        company_name: `${PREFIX} Contractor A2 ${Date.now()}`,
+        active:       true,
+        approved:     false,
+      })
+      .select('id, approved, approved_by').single()
+    expect(insErr).toBeNull()
+    expect(contractorRow?.approved).toBe(false)
+
+    // Attack: stamp self as the approver.
+    const { error: updErr } = await supabase
+      .from('contractors')
+      .update({
+        approved:    true,
+        approved_by: ctx.userId,
+        approved_at: new Date().toISOString(),
+      })
+      .eq('id', contractorRow!.id)
+    expect(updErr).not.toBeNull()
+    expect(updErr?.code).toBe('42501')
+
+    // Row remains in its original state.
+    const { data: stillUnapproved } = await supabase
+      .from('contractors').select('approved, approved_by').eq('id', contractorRow!.id).single()
+    expect(stillUnapproved?.approved).toBe(false)
+    expect(stillUnapproved?.approved_by).toBeNull()
+  })
+
+  // ── A-3 — bank_accounts column-grant on closure / RICS-designation ───────
+
+  test('C-3-new — pm user cannot toggle bank_accounts.is_active or rics_designated via direct UPDATE', async () => {
+    // Attack chain (Audit §A-3): closure flow uses PA action_type=
+    // 'close_bank_account' (dual-auth UI gate). RICS-designation flow uses
+    // PA action_type='toggle_rics_designation' (direction-gated). Both
+    // routes write `is_active=false` or `rics_designated=true→false` at
+    // the end. Pre-00030, any pm-tier user could write those columns
+    // directly via supabase-js, bypassing the dual-auth chain. Post-00030,
+    // the column GRANT excludes `is_active`, `closed_date`, `rics_designated`
+    // — direct UPDATE returns 42501.
+    const ctx = await signInAsPm()
+    const accountId = await seedBankAccount(ctx, 'A3-BA')
+
+    // (a) is_active toggle attempt.
+    const { error: closeErr } = await supabase.from('bank_accounts')
+      .update({ is_active: false, closed_date: '2026-05-10' })
+      .eq('id', accountId)
+    expect(closeErr).not.toBeNull()
+    expect(closeErr?.code).toBe('42501')
+
+    const { data: stillOpen } = await supabase
+      .from('bank_accounts').select('is_active, closed_date').eq('id', accountId).single()
+    expect(stillOpen?.is_active).toBe(true)
+    expect(stillOpen?.closed_date).toBeNull()
+
+    // (b) rics_designated toggle attempt (false→true is the riskier direction
+    //     in the 1g.5 flow because it pulls money into a designated account
+    //     without the direction-gated PA; both directions should be blocked
+    //     at the column-grant layer here).
+    const { error: ricsErr } = await supabase.from('bank_accounts')
+      .update({ rics_designated: true }).eq('id', accountId)
+    expect(ricsErr).not.toBeNull()
+    expect(ricsErr?.code).toBe('42501')
+
+    const { data: stillUnDesignated } = await supabase
+      .from('bank_accounts').select('rics_designated').eq('id', accountId).single()
+    expect(stillUnDesignated?.rics_designated).toBe(false)
   })
 })
