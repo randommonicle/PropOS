@@ -226,4 +226,55 @@ test.describe('Property detail — bank accounts', () => {
     // with the <strong> inside the now-still-open confirmation row.
     await expect(page.getByRole('cell', { name, exact: true })).toBeVisible()
   })
+
+  test('admin can flip rics_designated true→false directly via the form (1g.5 asymmetry preserved)', async ({ page }) => {
+    // 1g.5 deliberately allows admin / director to edit rics_designated
+    // directly via the BankAccountForm — the dual-auth flow is the path PMs
+    // use; admins are not blocked. This test locks in that asymmetry so a
+    // future commit accidentally extending the dual-auth gate to admins
+    // breaks this test loudly. See DECISIONS 2026-05-10 — 1g.5 §3.
+    await supabase.auth.signInWithPassword({ email: 'admin@propos.local', password: 'PropOS2026!' })
+    const { data: prop } = await supabase.from('properties').select('id, firm_id').limit(1).single()
+    if (!prop) throw new Error('No properties found for smoke test')
+
+    const name = `${BA_PREFIX} AdminRICSFlip ${Date.now()}`
+    const { data: account } = await supabase.from('bank_accounts').insert({
+      firm_id: prop.firm_id,
+      property_id: prop.id,
+      account_name: name,
+      account_type: 'service_charge',
+      rics_designated: true,
+    }).select('id').single()
+    if (!account) throw new Error('Failed to seed bank account')
+
+    // Snapshot the PA-row count for this firm so we can assert no PA was created.
+    const { count: paBefore } = await supabase
+      .from('payment_authorisations')
+      .select('*', { count: 'exact', head: true })
+      .eq('firm_id', prop.firm_id)
+
+    await page.goto(`/properties/${prop.id}?tab=bank-accounts`)
+    const row = page.getByRole('main').locator('tr', { has: page.getByText(name) })
+    await row.getByRole('button', { name: `Edit ${name}` }).click()
+    await expect(page.getByRole('heading', { name: 'Edit bank account' })).toBeVisible()
+
+    // Untick the RICS-designated checkbox — direct edit, no request flow.
+    const ricsCheckbox = page.getByLabel('RICS-designated client account')
+    await expect(ricsCheckbox).toBeEnabled()
+    await ricsCheckbox.uncheck()
+    await page.getByRole('button', { name: 'Update bank account' }).click()
+    await expect(page.getByRole('heading', { name: 'Edit bank account' })).not.toBeVisible()
+
+    // DB: rics_designated flipped immediately.
+    const { data: refreshed } = await supabase
+      .from('bank_accounts').select('rics_designated').eq('id', account.id).single()
+    expect(refreshed?.rics_designated).toBe(false)
+
+    // DB: no payment_authorisations row was created.
+    const { count: paAfter } = await supabase
+      .from('payment_authorisations')
+      .select('*', { count: 'exact', head: true })
+      .eq('firm_id', prop.firm_id)
+    expect(paAfter ?? 0).toBe(paBefore ?? 0)
+  })
 })

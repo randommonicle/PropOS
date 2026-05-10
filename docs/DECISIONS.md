@@ -470,6 +470,62 @@ When the demo-mode toggle ships (likely Phase 6 or 7 depending on when the first
 
 ---
 
+## 2026-05-10 — Comment hygiene + asymmetry regression test (1g.6)
+
+**Context:** A 1g.5 audit pass surfaced four stale comments in `BankAccountsTab.tsx` referencing commits / behaviours that have since shifted (transactions shipped in 1e; the balance trigger landed in 00005:144; the dual-auth workflow shipped across 1f / 1g / 1g.5 rather than only 1f). Separately, the deliberate 1g.5 asymmetry — admins can edit `rics_designated` directly via the form while PMs go through the dual-auth request flow — is a design decision that should have a regression test so a future commit accidentally extending the gate to admins fails loudly rather than silently.
+
+**Decision:**
+
+1. **Comment fixes in `BankAccountsTab.tsx`.** File-level docstring updated to: name `sync_bank_account_balance` (00005:144) explicitly as the trigger; remove `transactions` from the "NOT responsible for" list (TransactionsTab owns that since 1e); add the rule-5 line covering the closure / RICS-designation dual-auth flows. `FINANCE_ROLE_TOOLTIP` rewritten to direct PMs at the **Request closure** button rather than referencing "commit 1f" as a future home. `handleDelete`'s defence-in-depth comment now references the financial-rules Edge Function (deferred) rather than commit 1f.
+2. **Regression smoke (1 added).** `admin can flip rics_designated true→false directly via the form (1g.5 asymmetry preserved)` lives in `financial-bank-accounts.spec.ts`. Seeds an admin-owned account with `rics_designated=true`, snapshots the firm's PA count, opens the edit form, asserts the checkbox is enabled, unticks + saves, asserts the row is updated and PA count is unchanged. Active count: 88 → 89.
+3. **No schema or behaviour changes.** Pure-comment + pure-test commit. Migration ledger unchanged at 00024.
+
+**Rationale:** Stale comments accumulate trust debt. A reader auditing financial code who sees "trigger lands in commit 2" loses confidence in every other comment in the file. Regression tests on deliberate asymmetries are the cheapest way to make a design choice survive future refactors — without one, "admin can edit directly" is just a memory in DECISIONS that may not be the most-recently-read document when the next change lands.
+
+---
+
+## 2026-05-10 — Security-smoke pass (forward-looking)
+
+**Context:** PropOS is a regulated-finance system; RICS / TPI / FCA inspection trails depend on evidential controls that survive contact with adversarial users. The current smoke harness covers happy-path UI flows and statutory citation surfacing but does not exercise the security boundaries. A dedicated security-smoke pass is the right home for those tests, scheduled to land alongside the financial-rules Edge Function (the server-side enforcement layer that several UI guards already defer to).
+
+**Decision (forward-looking; no code in this commit):**
+
+When the security-smoke pass lands (likely the financial-rules Edge Function commit), it should cover at minimum:
+
+1. **RLS enforcement under role-swap.** A PM-authenticated supabase-js client should read **zero** rows from another firm's `bank_accounts`, `payment_authorisations`, `transactions`, `demands`, `service_charge_accounts`, `compliance_items`. Build a "foreign firm" via the test_users.sql pattern (a second firm with its own admin / PM seeded via Dashboard). Today no smoke verifies cross-firm isolation.
+2. **Self-auth bypass via direct DB.** A user crafting an INSERT into `payment_authorisations` then an UPDATE setting `status='authorised'` and `authorised_by=<self>` should be rejected by the financial-rules Edge Function. Today: client-side guard only — direct DB writes via supabase-js with a leaked publishable key would succeed.
+3. **JWT tampering.** A token with a forged `user_role: 'admin'` claim should not get elevated access. The hook resolves role from `public.users` (DECISIONS 2026-05-07), so the rejection should be automatic; the smoke proves the trust boundary holds.
+4. **Hard-delete via service-role.** Out-of-band deletion of `bank_accounts` / `transactions` / `demands` should be detected via the audit-log layer (Phase 5+) and produce a flagged anomaly. Smoke writes the bypass and asserts the audit signal.
+5. **Authority limit bypass.** `payment_authorisations.authority_limit` is currently unused. Once enforcement lands, smoke should authorise above-limit and assert rejection.
+6. **Storage bucket scoping.** Leaseholder-portal users should not retrieve another firm's documents via the storage API. Mirrors the RLS test for the storage layer.
+
+*FORWARD: this entry is the canonical scope for the security-smoke pass. When the financial-rules Edge Function is built, expand each bullet into a smoke + cite this entry in the commit's DECISIONS.*
+
+---
+
+## 2026-05-10 — Data-integrity / auto-protect pass (forward-looking)
+
+**Context:** The financial entities (bank accounts, transactions, demands, payment authorisations, service charge accounts) currently rely on UI guards + RLS for integrity. The DB has minimal CHECK constraints and no anomaly detection. A dedicated integrity / auto-protect pass should harden the DB layer so a determined bad actor with direct DB access cannot quietly corrupt the audit trail. This is the kind of work that belongs in Phase 5 alongside the audit-log table.
+
+**Decision (forward-looking; no code in this commit):**
+
+When the integrity / auto-protect pass lands, it should cover at minimum:
+
+1. **Sign-vs-type integrity.** `transactions.transaction_type='receipt'` requires `amount > 0`; `payment` requires `amount < 0`; `journal` allows either non-zero. Implement as a `CHECK` constraint on the table. Smoke: insert each forbidden combination via supabase-js and assert rejection. Existing UI converts on save (1e), so this just locks in what the UI already enforces.
+2. **Audit-stamp coherence.** `(authorised_at IS NULL) = (authorised_by IS NULL)` and the equivalent for `(rejected_at, rejected_by, rejection_reason)`. A row with `authorised_at` set but `authorised_by` null is structurally invalid and signals tampering. Add as `CHECK` constraints on `payment_authorisations`.
+3. **Proposed-JSONB immutability post-action.** Once a PA is `authorised` or `rejected`, `proposed` should be frozen. Add a BEFORE-UPDATE trigger that rejects `OLD.status != 'pending' AND NEW.proposed IS DISTINCT FROM OLD.proposed`. UI never edits `proposed` after pending; this defends against direct-DB tampering.
+4. **Time-window sanity.** `transactions.transaction_date` constrained to a sensible window — e.g. `1990-01-01 ≤ transaction_date ≤ today + 1 year`. Same on `demands.issued_date`. CHECK constraint with a clear error message.
+5. **Trigger-maintained-value protection.** `bank_accounts.current_balance` is owned by `sync_bank_account_balance` (00005:144). Add a column-level rule: any UPDATE that changes `current_balance` is silently overwritten back to `SUM(transactions.amount)` for that account, OR rejected with an explicit error. Same pattern for any future trigger-owned values (e.g. `service_charge_accounts.spent_so_far` when reconciliation lands).
+6. **Rapid-mutation rate limit (auto-protect).** Add a `last_mutation_at TIMESTAMPTZ` column to high-stakes tables (`payment_authorisations`, `bank_accounts`) and a BEFORE-UPDATE trigger that rejects mutations faster than (e.g.) 100ms apart. Prevents flapping / scripted attacks. The dispatch path inside the financial-rules Edge Function gets a bypass token.
+7. **Tamper-resistant audit log.** Append-only `audit_log` table with `INSERT`-only RLS for every role including `service_role`. Every financial mutation writes a row with `actor_id`, `action`, `before_state`, `after_state`, `at`. Belongs with the Phase 5 audit work.
+8. **Anomaly detector.** A periodic Edge Function that surfaces patterns like "balance changed by > 10% in < 5 minutes without a corresponding transaction insert" or "more than N demands withdrawn in M minutes". Surfaces to admin dashboard. Phase 6+.
+
+The "auto-protect on detection" pattern: items 5, 6, 7 are passive (they reject or rewrite invalid writes). Item 8 is active (it surfaces alerts). Layering passive + active gives defence in depth.
+
+*FORWARD: this entry is the canonical scope for the data-integrity / auto-protect pass. When Phase 5 audit-log lands, expand each bullet into a migration + smoke + cite this entry.*
+
+---
+
 ## 2026-05-07 — pgAudit enablement approach
 
 **Context:** Section 4 requires pgAudit to be enabled before any data migration. The Supabase hosted project does not allow direct superuser SQL for extension creation on the free tier in some cases.

@@ -5,12 +5,17 @@
  *
  * Responsible for: full CRUD on `bank_accounts` rows scoped to a single property,
  *                  including FK-safe deletion guarded by RICS Client Money Rule 4.7
- *                  and TPI Code §5 audit-retention requirements.
- * NOT responsible for: transactions, reconciliation, statement import (later commits).
+ *                  and TPI Code §5 audit-retention requirements; PM-facing
+ *                  dual-auth request flows for closure (1g) and RICS-designation
+ *                  removal (1g.5).
+ * NOT responsible for: reconciliation workflow, statement import (deferred Phase 3
+ *                      pieces). Transactions are owned by TransactionsTab (1e).
  *
- * Regulatory rules baked in (see DECISIONS 2026-05-09 — bank account deletion policy):
- *   1. `current_balance` is read-only in the UI. It is trigger-maintained on
- *      reconciliation completion per spec §5.6 and the trigger lands in commit 2.
+ * Regulatory rules baked in (see DECISIONS 2026-05-09 — bank account deletion policy
+ * and 2026-05-10 — closure / 1g.5 dual-auth):
+ *   1. `current_balance` is read-only in the UI. It is trigger-maintained by
+ *      `sync_bank_account_balance` (migration 00005:144) — every INSERT/UPDATE/DELETE
+ *      on `transactions` updates the linked account's balance to `SUM(amount)`.
  *   2. Hard-delete is permitted ONLY when the account has zero transactions
  *      (FK 23503 surfaces this), zero reconciliations (`last_reconciled_at IS NULL`),
  *      and no `closed_date` set. Any other state forces the PM to use Mark as Closed
@@ -19,6 +24,12 @@
  *      sort code and account number are NEVER stored — see schema 00005:14-17.
  *   4. `dual_auth_threshold` uses MoneyInput (integer pence canonical) and is the
  *      payment-authorisation threshold per spec §5.6.
+ *   5. Closure (`is_active: true → false`) and RICS-designation removal
+ *      (`rics_designated: true → false`) are dual-auth-gated for non-finance roles:
+ *      the PM clicks **Request closure** / **Request designation removal**, which
+ *      inserts a `payment_authorisations` row; an admin / director (not the
+ *      requester) authorises via PaymentAuthorisationsTab. The protective
+ *      direction (`rics_designated: false → true`) is a direct edit, not gated.
  */
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
@@ -51,9 +62,10 @@ const CURRENT_BALANCE_TOOLTIP =
   'updates automatically when transactions are reconciled and cannot be edited directly.'
 
 const FINANCE_ROLE_TOOLTIP =
-  'Closure and deletion are restricted to admin and director roles. Property ' +
-  'Managers cannot mark a bank account as closed or delete one. Full ' +
-  'dual-authorisation workflow ships in commit 1f (DECISIONS 2026-05-09).'
+  'Closure and hard-deletion are restricted to admin and director roles. ' +
+  'Property Managers should use the Request closure button to submit a ' +
+  'closure request for an admin or director to authorise (RICS Client Money ' +
+  'Rule 4.7 — segregation of duties).'
 
 export function BankAccountsTab({
   firmId,
@@ -97,7 +109,8 @@ export function BankAccountsTab({
 
     // Defence in depth: the Delete button is disabled for non-finance roles, but
     // we re-check here in case the disabled state is bypassed (DevTools, scripts,
-    // future code paths). Final enforcement will move server-side in commit 1f.
+    // future code paths). Server-side enforcement is deferred to the financial-rules
+    // Edge Function — see DECISIONS 2026-05-09.
     if (!canManageClosure) {
       setDeleteErr(FINANCE_ROLE_TOOLTIP)
       setDeletingId(null)
