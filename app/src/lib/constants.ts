@@ -107,20 +107,22 @@ export const isStaffPmTier = (roles: readonly UserRole[] | null | undefined) =>
   hasAny(['admin','accounts','senior_pm','property_manager'], roles)
 
 /**
- * Any role authorised on a regulated-finance action (today: admin only —
- * semantics preserved through 1i.3 phase 2). Phase 3 introduces the
- * tier-asymmetric flip-on: queue-for-payment requires accounts OR admin;
- * authorise-payment requires admin (with self-auth guard); payee-setup
- * authoriser ≠ release authoriser. Until phase 3 lands, this remains the
- * admin-only gate from 1i.2.
+ * Any role authorised on the FIRST-leg of a regulated-finance action — i.e.
+ * who can REQUEST a payment_release (queue-for-payment) or a
+ * payment_payee_setup. Post-1i.3 phase 3: admin OR accounts. The
+ * AUTHORISE-leg (releasing money or stamping the payee) remains admin-only;
+ * the self-auth guard plus the payee-setter ≠ release-authoriser
+ * segregation gate enforce regulatory separation between the two staff
+ * members involved.
  *
  * RICS Client money handling (1st ed., Oct 2022 reissue) — both signatories
  * on a managing-agent client-account withdrawal must be staff of the
  * regulated firm. `director` is client-side (RMC directors / freeholder
- * representatives) and explicitly excluded.
+ * representatives) and explicitly excluded. Both `admin` and `accounts`
+ * are staff and therefore eligible.
  */
 export const hasAnyFinanceRole = (roles: readonly UserRole[] | null | undefined) =>
-  hasAdminRole(roles)
+  hasAdminRole(roles) || hasAccountsRole(roles)
 
 /**
  * Legacy single-role finance gate. Kept as a thin shim over the new array

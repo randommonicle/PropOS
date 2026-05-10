@@ -15,15 +15,18 @@
  *
  * Role-tier semantics (regulatory anchor: RICS Client money handling 1st ed.,
  * Oct 2022 reissue):
- *   - PM (`property_manager`) drives received → approved (and the
- *     disputed/rejected → received re-review path). PM CANNOT drive
+ *   - PM (`property_manager` or `senior_pm`) drives received → approved (and
+ *     the disputed/rejected → received re-review path). PM CANNOT drive
  *     approved → queued or queued → paid — those require staff with finance
- *     authority (today: `admin` only; 1i.3 splits into accounts + admin tiers).
- *   - Finance role (`isFinanceRole`, today admin-only) drives
+ *     authority (post-1i.3: admin OR accounts via hasAnyFinanceRole).
+ *   - Finance role (`hasAnyFinanceRole`, post-1i.3 admin OR accounts) drives
  *     approved → queued (queue for payment, creates the dual-auth PA row).
  *     The queued → paid edge is driven by the PA authorise flow itself, never
  *     by a direct edit, so it is NOT exposed here as a callable transition.
- *   - Both roles can drive any → disputed and any → rejected (terminal).
+ *   - Both role-tiers can drive any → disputed and any → rejected (terminal).
+ *   - This module consumes the user_roles[] array claim via the typed helpers
+ *     in `@/lib/constants` (1i.3 phase 3 — replaces the legacy singular
+ *     UserRole signature).
  *
  * State machine reference (DECISIONS 2026-05-10 — Invoices CRUD, §UX rule 4):
  *
@@ -38,7 +41,7 @@
  *    reconciliation completed lock (1h.3).
  */
 import type { InvoiceStatus, UserRole } from '@/lib/constants'
-import { isFinanceRole } from '@/lib/constants'
+import { hasAnyFinanceRole, hasPmRole, hasSeniorPmRole } from '@/lib/constants'
 
 /** Statuses that lock all fields except `notes`. Surface as a "Lock" banner
  *  on the drawer; mirrors the demand paid lock. */
@@ -122,10 +125,11 @@ export function canAccountsTransition(
  * with the role-gate. Returns null on success or a human-readable rejection
  * message on failure (the same string used in the inline error AND in the
  * audit-log notes — statutory-citation-as-test-anchor pattern from LESSONS
- * Phase 3 session 2).
+ * Phase 3 session 2). Consumes the user_roles[] array claim via the typed
+ * helpers (1i.3).
  */
 export function rejectionMessageForTransition(
-  role: UserRole | null | undefined,
+  roles: readonly UserRole[] | null | undefined,
   from: InvoiceStatus, to: InvoiceStatus,
 ): string | null {
   if (!canTransition(from, to)) {
@@ -138,17 +142,20 @@ export function rejectionMessageForTransition(
       'RICS Client money handling — segregation of duties.'
     )
   }
-  if (role === 'property_manager') {
+  // PM-tier (property_manager OR senior_pm) — same edge-set today; senior_pm
+  // overrides land in a follow-on commit (FORWARD: senior_pm reconciliation
+  // re-open UI is the first override surface).
+  if (hasPmRole(roles) || hasSeniorPmRole(roles)) {
     if (from === 'approved' && to === 'queued') {
       return (
         'Property Managers cannot queue invoices for payment. Queue-for-payment ' +
-        'is restricted to staff with finance authority (admin role). ' +
+        'is restricted to staff with finance authority (admin or accounts). ' +
         'RICS Client money handling — segregation of duties.'
       )
     }
     return null
   }
-  if (isFinanceRole(role)) {
+  if (hasAnyFinanceRole(roles)) {
     if (from === 'received' && to === 'approved') {
       return (
         'Confirming an invoice is the Property Manager\'s action. ' +
@@ -171,16 +178,21 @@ export function rejectionMessageForTransition(
 
 /**
  * Convenience for the UI — returns the subset of `legalNextStatuses(from)`
- * that the given role can actually drive. Used to populate the status
- * dropdown so a PM never sees a `queued` option, etc.
+ * that the given roles can actually drive. Used to populate the status
+ * dropdown so a PM never sees a `queued` option, etc. A multi-role user
+ * (e.g. admin who also holds accounts) sees the union.
  */
 export function statusOptionsForRole(
-  role: UserRole | null | undefined,
+  roles: readonly UserRole[] | null | undefined,
   from: InvoiceStatus,
 ): readonly InvoiceStatus[] {
   return legalNextStatuses(from).filter(to => {
-    if (role === 'property_manager') return canPMTransition(from, to)
-    if (isFinanceRole(role))         return canAccountsTransition(from, to)
+    if (hasPmRole(roles) || hasSeniorPmRole(roles)) {
+      if (canPMTransition(from, to)) return true
+    }
+    if (hasAnyFinanceRole(roles)) {
+      if (canAccountsTransition(from, to)) return true
+    }
     return false
   })
 }

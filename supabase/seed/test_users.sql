@@ -15,8 +15,11 @@
 -- users.role).
 --
 -- PRE-REQUISITES (do these in Dashboard → Authentication → Users first):
---   1. Add user "pm@propos.local"       password PropOS2026!  (auto-confirm)
---   2. Add user "director@propos.local" password PropOS2026!  (auto-confirm)
+--   1. Add user "pm@propos.local"        password PropOS2026!  (auto-confirm)
+--   2. Add user "director@propos.local"  password PropOS2026!  (auto-confirm)
+--   3. Add user "accounts@propos.local"  password PropOS2026!  (1i.3, auto-confirm)
+--   4. Add user "senior_pm@propos.local" password PropOS2026!  (1i.3, auto-confirm)
+--   5. Add user "auditor@propos.local"   password PropOS2026!  (1i.3, auto-confirm)
 --
 -- Then run this script via Dashboard → SQL Editor. The dashboard "no RLS"
 -- false-positive on INSERT scripts (memory) — safe to click "Run without RLS".
@@ -49,8 +52,11 @@ SELECT
   au.id,
   demo_firm.id,
   CASE au.email
-    WHEN 'pm@propos.local'       THEN 'Demo Property Manager'
-    WHEN 'director@propos.local' THEN 'Demo Director'
+    WHEN 'pm@propos.local'        THEN 'Demo Property Manager'
+    WHEN 'director@propos.local'  THEN 'Demo Director'
+    WHEN 'accounts@propos.local'  THEN 'Demo Accounts'
+    WHEN 'senior_pm@propos.local' THEN 'Demo Senior PM'
+    WHEN 'auditor@propos.local'   THEN 'Demo Auditor'
   END,
   au.email,
   true,
@@ -58,7 +64,10 @@ SELECT
   now(),
   now()
 FROM auth.users au, demo_firm
-WHERE au.email IN ('pm@propos.local', 'director@propos.local')
+WHERE au.email IN (
+  'pm@propos.local', 'director@propos.local',
+  'accounts@propos.local', 'senior_pm@propos.local', 'auditor@propos.local'
+)
 ON CONFLICT (id) DO UPDATE SET
   full_name  = EXCLUDED.full_name,
   active     = true,
@@ -69,20 +78,29 @@ INSERT INTO public.user_roles (user_id, role)
 SELECT
   u.id,
   CASE u.email
-    WHEN 'pm@propos.local'       THEN 'property_manager'
-    WHEN 'director@propos.local' THEN 'director'
+    WHEN 'pm@propos.local'        THEN 'property_manager'
+    WHEN 'director@propos.local'  THEN 'director'
+    WHEN 'accounts@propos.local'  THEN 'accounts'
+    WHEN 'senior_pm@propos.local' THEN 'senior_pm'
+    WHEN 'auditor@propos.local'   THEN 'auditor'
   END
 FROM public.users u
-WHERE u.email IN ('pm@propos.local', 'director@propos.local')
+WHERE u.email IN (
+  'pm@propos.local', 'director@propos.local',
+  'accounts@propos.local', 'senior_pm@propos.local', 'auditor@propos.local'
+)
 ON CONFLICT (user_id, role) DO NOTHING;
 
--- ── Verify — should show admin + director + property_manager ────────────────
+-- ── Verify — admin + 5 demo staff/client roles populated ────────────────────
 SELECT u.email, u.full_name,
        array_agg(ur.role ORDER BY ur.role) AS roles,
        f.name AS firm_name
 FROM public.users u
 JOIN firms f ON u.firm_id = f.id
 LEFT JOIN public.user_roles ur ON ur.user_id = u.id
-WHERE u.email IN ('admin@propos.local', 'pm@propos.local', 'director@propos.local')
+WHERE u.email IN (
+  'admin@propos.local', 'pm@propos.local', 'director@propos.local',
+  'accounts@propos.local', 'senior_pm@propos.local', 'auditor@propos.local'
+)
 GROUP BY u.email, u.full_name, f.name
 ORDER BY u.email;

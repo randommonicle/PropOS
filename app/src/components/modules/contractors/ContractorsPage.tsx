@@ -15,7 +15,8 @@ import { PageHeader } from '@/components/shared/PageHeader'
 import { Button, Card, CardContent, Badge, Input } from '@/components/ui'
 import { HardHat, Plus, Search, Pencil, X, ChevronDown, ChevronUp, Settings2 } from 'lucide-react'
 import { formatDate, daysUntil } from '@/lib/utils'
-import { hasAdminRole, hasDirectorRole } from '@/lib/constants'
+import { hasAdminRole, hasAnyFinanceRole, hasDirectorRole } from '@/lib/constants'
+import { buildPayeeSetupPA, validateProposedPayeeSetup } from '@/lib/contractors/payeeSetup'
 import type { Database } from '@/types/database'
 
 type Contractor = Database['public']['Tables']['contractors']['Row']
@@ -57,8 +58,12 @@ const tradeCatTable = () => (supabase as any).from('trade_categories')
 
 export function ContractorsPage() {
   const firmContext = useAuthStore(s => s.firmContext)
+  const userId = useAuthStore(s => s.user?.id ?? null)
   const roles = firmContext?.roles ?? null
   const isAdmin = hasAdminRole(roles) || hasDirectorRole(roles)
+  // Function-split (1i.3): payment_payee_setup PA can be requested by any
+  // finance-tier staff (admin or accounts). Authorisation remains admin-only.
+  const canRequestPayeeSetup = hasAnyFinanceRole(roles)
 
   const [contractors, setContractors] = useState<Contractor[]>([])
   const [filtered, setFiltered] = useState<Contractor[]>([])
@@ -123,6 +128,8 @@ export function ContractorsPage() {
         {showForm && (
           <ContractorForm
             firmId={firmContext!.firmId}
+            userId={userId}
+            canRequestPayeeSetup={canRequestPayeeSetup}
             initial={editing}
             tradeCategories={activeCategories}
             onSaved={() => { setShowForm(false); setEditing(null); load() }}
@@ -340,8 +347,14 @@ function TradeAdminPanel({ firmId, categories, onChanged }: {
 }
 
 // ── Contractor Form ──────────────────────────────────────────────────────────
-function ContractorForm({ firmId, initial, tradeCategories, onSaved, onCancel }: {
+function ContractorForm({
+  firmId, userId, canRequestPayeeSetup, initial, tradeCategories, onSaved, onCancel,
+}: {
   firmId: string
+  userId: string | null
+  /** True iff the current user can submit a payment_payee_setup PA
+   *  (hasAnyFinanceRole — admin OR accounts). */
+  canRequestPayeeSetup: boolean
   initial: Contractor | null
   tradeCategories: TradeCat[]
   onSaved: () => void
@@ -357,9 +370,14 @@ function ContractorForm({ firmId, initial, tradeCategories, onSaved, onCancel }:
     gas_safe_number:     initial?.gas_safe_number ?? '',
     electrical_approval: initial?.electrical_approval ?? '',
     preferred_order:     String(initial?.preferred_order ?? 99),
-    approved:            initial?.approved ?? false,
     active:              initial?.active ?? true,
     notes:               initial?.notes ?? '',
+    // Bank details — populated into the payment_payee_setup PA proposed
+    // JSONB. Not first-class columns on contractors today (PoC); production
+    // schema lands in the data-integrity pass with encrypted columns.
+    sort_code:           '',
+    account_number:      '',
+    account_name:        '',
   })
 
   // Selected trade categories — stored as display names (e.g. "Electrical")
@@ -381,11 +399,29 @@ function ContractorForm({ firmId, initial, tradeCategories, onSaved, onCancel }:
     })
   }
 
+  // RICS Client money handling — segregation of duties. Contractor approval
+  // is no longer a manually-tickable checkbox; it flows through the
+  // dual-auth payment_payee_setup PA. On contractor add (or on bank-detail
+  // edit on an existing contractor), the form INSERTs the contractor with
+  // approved=false then INSERTs a payment_payee_setup PA. An admin
+  // authorises the PA which stamps `contractors.approved_by` + `approved_at`
+  // and flips `contractors.approved=true`. The same admin then becomes
+  // INELIGIBLE to authorise a future payment_release to that contractor —
+  // see PaymentAuthorisationsTab.handleAuthorise.
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setSaving(true)
     setError(null)
 
+    const bankDetailsProvided =
+      values.sort_code.trim() !== '' ||
+      values.account_number.trim() !== '' ||
+      values.account_name.trim() !== ''
+    const isReApproval = !!initial && bankDetailsProvided
+
+    // Edit path with no bank-detail change: just patch contractor metadata.
+    // No PA insertion, no approved-flag flip. Mirrors the legacy "edit notes
+    // and trades only" flow.
     const payload = {
       firm_id:             firmId,
       company_name:        values.company_name,
@@ -398,19 +434,60 @@ function ContractorForm({ firmId, initial, tradeCategories, onSaved, onCancel }:
       gas_safe_number:     values.gas_safe_number || null,
       electrical_approval: values.electrical_approval || null,
       preferred_order:     parseInt(values.preferred_order, 10) || 99,
-      approved:            values.approved,
+      // approved is NEVER set directly — only by the PA authorise path.
+      // Bank-detail edit on an existing contractor flips approved=false
+      // until the fresh payment_payee_setup PA is authorised.
+      approved:            initial && !isReApproval ? initial.approved : false,
       active:              values.active,
       notes:               values.notes || null,
     }
 
-    let err: { message: string } | null = null
+    let contractorId = initial?.id ?? null
     if (initial) {
-      ;({ error: err } = await supabase.from('contractors').update(payload).eq('id', initial.id))
+      const { error: uErr } = await supabase
+        .from('contractors').update(payload).eq('id', initial.id)
+      if (uErr) { setError(uErr.message); setSaving(false); return }
     } else {
-      ;({ error: err } = await supabase.from('contractors').insert(payload))
+      const { data: inserted, error: iErr } = await supabase
+        .from('contractors').insert(payload).select('id').single()
+      if (iErr || !inserted) {
+        setError(iErr?.message ?? 'Failed to create contractor.')
+        setSaving(false); return
+      }
+      contractorId = inserted.id
     }
-    if (err) { setError(err.message); setSaving(false) }
-    else onSaved()
+
+    // Insert the payment_payee_setup PA only when bank details were entered.
+    // Contractors without bank details don't yet need a PA (no money flow);
+    // they can be created as approved=false and an accounts user can later
+    // edit the contractor to add bank details, which triggers the PA via
+    // the re-approval path. Avoids spurious validation errors on the
+    // contractor-CRUD-only flow.
+    const shouldInsertPA = bankDetailsProvided && canRequestPayeeSetup
+    if (shouldInsertPA && contractorId && userId) {
+      const pa = buildPayeeSetupPA(
+        { id: contractorId, firm_id: firmId, company_name: values.company_name },
+        {
+          sort_code:      values.sort_code.trim()     || null,
+          account_number: values.account_number.trim()|| null,
+          account_name:   values.account_name.trim()  || null,
+        },
+        userId,
+        isReApproval,
+      )
+      const validationError = validateProposedPayeeSetup(pa.proposed)
+      if (validationError) {
+        setError(validationError); setSaving(false); return
+      }
+      const { error: paErr } = await supabase.from('payment_authorisations').insert(pa)
+      if (paErr) {
+        setError(`Contractor saved but payee-setup PA failed: ${paErr.message}.`)
+        setSaving(false); return
+      }
+    }
+
+    setSaving(false)
+    onSaved()
   }
 
   return (
@@ -508,17 +585,48 @@ function ContractorForm({ firmId, initial, tradeCategories, onSaved, onCancel }:
             <label htmlFor="co-notes" className="text-sm font-medium">Notes</label>
             <Input id="co-notes" value={values.notes} onChange={e => set('notes', e.target.value)} />
           </div>
+          {/* Bank details — RICS function-split. Filled in for the
+              payment_payee_setup PA's proposed JSONB. Optional on edit;
+              when filled in on edit, triggers a fresh PA + flips the
+              contractor's approved flag back to false. */}
+          <div className="col-span-2 mt-2 pt-4 border-t">
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-sm font-medium">Bank details (payee setup)</h4>
+              {initial && (
+                <Badge variant={initial.approved ? 'green' : 'amber'} className="text-xs">
+                  {initial.approved ? 'Approved' : 'Pending payee-setup approval'}
+                </Badge>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground mb-3">
+              Saving with bank details entered raises a payment_payee_setup
+              authorisation request. An admin (other than the requester)
+              must authorise it before any payment can be released to this
+              contractor. RICS Client money handling — segregation of
+              duties; both signatories must be staff of the firm.
+            </p>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="space-y-1">
+                <label htmlFor="co-sort" className="text-xs font-medium">Sort code</label>
+                <Input id="co-sort" placeholder="00-00-00"
+                  value={values.sort_code}
+                  onChange={e => set('sort_code', e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <label htmlFor="co-acct" className="text-xs font-medium">Account number</label>
+                <Input id="co-acct" placeholder="12345678"
+                  value={values.account_number}
+                  onChange={e => set('account_number', e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <label htmlFor="co-acctn" className="text-xs font-medium">Account name</label>
+                <Input id="co-acctn"
+                  value={values.account_name}
+                  onChange={e => set('account_name', e.target.value)} />
+              </div>
+            </div>
+          </div>
           <div className="col-span-2 flex items-center gap-6">
-            <label className="flex items-center gap-2 text-sm cursor-pointer">
-              <input
-                type="checkbox"
-                id="co-approved"
-                checked={values.approved}
-                onChange={e => set('approved', e.target.checked)}
-                className="h-4 w-4"
-              />
-              Approved contractor
-            </label>
             <label className="flex items-center gap-2 text-sm cursor-pointer">
               <input
                 type="checkbox"
