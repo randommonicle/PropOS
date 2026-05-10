@@ -526,6 +526,79 @@ The "auto-protect on detection" pattern: items 5, 6, 7 are passive (they reject 
 
 ---
 
+## 2026-05-10 — Production-grade gate (the demo-grade-to-production-grade rule)
+
+**Context:** PropOS is being built as a PoC; many enforcement decisions ship as UI-only at PoC time with the proper server-side enforcement deferred (financial-rules Edge Function, INSERT-only audit-log RLS, atomic transactional wraps, etc.). The "Demo mode toggle" entry from earlier today covers data deletion at exit-demo time but not the orthogonal question of feature-behaviour difference. The build engineer's directive: **a real customer must never be exposed to a PoC-grade behaviour**. PoC-only paths must be either replaced with their production version OR refused at runtime when a firm has exited demo mode.
+
+**Decision:**
+
+1. **`firms.is_demo BOOLEAN NOT NULL DEFAULT true`** — added in migration 00025. Default `true` => every existing firm is correctly classified at PoC time. The Demo-mode-exit flow (Phase 6/7 candidate per the existing entry) flips this to `false`. No runtime branching is implemented in this commit, but the column is in place so future PoC-grade code paths can reference it without a migration when the production replacement lands.
+2. **`FORWARD: PROD-GATE` flag convention.** Every PoC-only enforcement decision in any commit carries a paired flag at the relevant code anchor (file, migration, doc) — not just in DECISIONS. Convention:
+   ```
+   // FORWARD: PROD-GATE — replace before any firm exits demo mode.
+   // Reason: <one line>. Anchor: <DECISIONS entry>.
+   ```
+   The grep manifest is `grep -r "FORWARD: PROD-GATE"`.
+3. **Exit-demo pre-flight (not in this commit; recorded as the eventual contract).** When the demo-mode-exit flow ships, its pre-flight scans the codebase (or a maintained manifest) for `FORWARD: PROD-GATE` flags. For each, the production replacement must either be deployed (Edge Function live, trigger present, etc.) OR the code path must refuse to run with a clear "production-grade enforcement not yet deployed for this firm — contact support" banner. The flow refuses to flip `is_demo=false` if any reachable PROD-GATE path is unaddressed.
+4. **Sibling, not replacement, of the existing "Demo mode toggle" entry.** That entry covers data deletion (one-action exit-demo deletes the demo firm and cascades). This entry covers behaviour difference (PoC-only enforcement paths must not be reachable from a non-demo firm). Both are pre-flight checks at the same moment.
+
+**Rationale:** Without this rule, the "Demo mode toggle" is half a story — clean data, but unsafe behaviour. With it, exiting demo mode is a hard gate that catches every UI-only guard, every non-atomic write path, every audit-log path that's missing append-only RLS. The `FORWARD: PROD-GATE` convention turns the deferred items list into a grep-able manifest rather than a memory-only hazard. The `is_demo` column is one line in a migration; the runtime-branch implementation lands when it's needed and can rely on the column already being there.
+
+**Initial PROD-GATE manifest** (planted in this commit's reconciliation work; expand on every subsequent commit):
+
+| # | PoC compromise | Production replacement | Anchor |
+|---|---|---|---|
+| 1 | Client-side three-pass matching | Edge Function `reconciliation_engine.ts` | `app/src/lib/reconciliation/matchingEngine.ts` (1h.2) |
+| 2 | Self-mapped CSV columns | Curated bank-template presets | `parseStatement.ts` header + `00025_*.sql` |
+| 3 | CSV-only parsers | OFX + QIF + Open Banking AIS | `parseStatement.ts` registry |
+| 4 | UI-only `period.status='completed'` immutability | DB BEFORE-UPDATE trigger | `00025_*.sql` |
+| 5 | UI-only suspense-row immutability | DB CHECK + trigger | `00025_*.sql` |
+| 6 | UI-only audit-log INSERT (no append-only RLS) | INSERT-only RLS for every role | `00025_*.sql` |
+| 7 | Two-write non-atomic completion | Edge Function in `BEGIN…COMMIT` | `ReconciliationCompleteModal.tsx` (1h.3) |
+| 8 | UI-only £0.01 balance check | DB-level trigger reconciling balance | `00025_*.sql` |
+| 9 | Manual suspense-item resolution path | Resolution lifecycle UI | `ReconciliationTab.tsx` |
+| 10 | Client-stamped `reconciled_by` | Edge Function stamps from auth context | `ReconciliationReviewModal.tsx` (1h.2) |
+| 11 | No 6-year retention enforcement on `reconciliation_audit_log` | retention_until + nightly cold-storage cron | `00025_*.sql` |
+| 12 | No anomaly detection on reconciliation patterns | Periodic Edge Function | DECISIONS only — too distant for code FORWARD |
+
+*FORWARD: PROD-GATE — this entry is the canonical scope of the production-grade gate. Every Phase 3+ commit should grow the manifest and plant a paired flag at each anchor.*
+
+---
+
+## 2026-05-10 — Reconciliation 1h.1: schema + statement import pipeline
+
+**Context:** Phase 3's bank reconciliation engine (spec §5.3) is the last substantial piece before Phase 3 wraps. The work is too large for one commit, so it's split: 1h.1 (schema + import pipeline), 1h.2 (matching engine + review UI), 1h.3 (completion + audit log writes). Each commit ends in a clean state — 1h.1 leaves periods open with statement uploaded, awaiting the review screen that lands in 1h.2. The plan-first gate produced the file list, smoke list, and migration SQL up front; the user signed off on the 3-commit decomposition, the CSV-only parser scope, the dedicated `reconciliation_periods` table, the partial unique index for one-open-period-per-account, the column-mapping JSONB on `bank_accounts`, and the `firms.is_demo` Production-grade gate column.
+
+**Decision:**
+
+1. **Schema migration 00025.** Adds `firms.is_demo`, `bank_accounts.csv_column_map JSONB`, three new tables (`suspense_items`, `reconciliation_periods`, `reconciliation_audit_log`), and a partial unique index `uq_recperiod_one_open_per_account ON reconciliation_periods(bank_account_id) WHERE status = 'open'` (enforces 1h.3 smoke 2b — one open period per bank account at any time). RLS on each new table mirrors the financial-tables pattern at 00012:122-136 (`firm_id = auth_firm_id() AND is_pm_or_admin()`). Seven `FORWARD: PROD-GATE` flags planted across the migration file at each PoC-only enforcement point.
+2. **Tab placement.** Reconciliation is the **9th** per-property tab on `PropertyDetailPage`, after Payment authorisations. Per-property scope matches RICS / TPI inspection units; multi-account reconciliation across the firm is deferred (Phase 6 reporting candidate).
+3. **Period lifecycle is the persistent thing.** A reconciliation period is the durable unit. A statement upload is an event within the period. PMs can start a period, walk away, and come back to upload — supporting the realistic workflow where statement download from the bank and processing happen at different times. The `bank_statement_imports.status` (pending → processing → matched → complete) tracks the import event; the `reconciliation_periods.status` (open → completed) tracks the period itself.
+4. **Status discipline.** Per spec §5.3 "On parse success, status moves to 'processing'." On the client, we insert directly with `status='processing'` once the parser succeeds — pending only ever exists transiently in the spec's server-side model and would be misleading to write client-side. Matching ('matched') and completion ('complete') statuses land in 1h.2 / 1h.3.
+5. **CSV parser with column-mapping.** `parseStatement.ts` dispatches by detected format (`detectFormat` sniffs OFX `<?xml`/`<OFX>` and QIF `!Type:` markers). CSV implementation handles header-row detection (skipping Lloyds-style preambles), quoted fields with escaped quotes, single-amount and debit/credit-pair amount paths, three date formats (DD/MM/YYYY, YYYY-MM-DD, MM/DD/YYYY), thousands separators, parens-for-negative, £ prefix. OFX and QIF stubs throw `StatementParseError` with the literal "FORWARD: 1h.4" string in the user-facing message — doubling as the test anchor for smoke 4 (statutory-citation pattern from LESSONS Phase 3 session 2 applied to forward references).
+6. **Column-mapping cached on `bank_accounts.csv_column_map`.** First import surfaces a mapping form auto-populated from cached map if the previous import's headers are still present; mismatched headers reset the map. Saved back on successful import only — failed imports don't pollute the cache. PROD-GATE flag points at curated bank-template presets as the production replacement.
+7. **One-open-period-per-account guard.** The partial unique index in 00025 enforces this at the DB layer. UI catches the 23505 and surfaces the friendly message "This account already has an in-progress reconciliation period. Open it from the list."
+8. **No matching, no completion, no review modal in this commit.** ReconciliationTab and StatementImportModal both reference 1h.2 / 1h.3 explicitly with FORWARD comments. The "review pending" state when an open period has an uploaded statement surfaces a clear message pointing at 1h.2.
+
+**Smokes (4 added).** Active count: 89 → 93.
+- `Reconciliation tab renders 9th and lists per-account state` — verifies tab presence, the per-account row, the "Never reconciled" badge for a fresh account, and the Start reconciliation button.
+- `PM starts a new reconciliation period — period row created with status=open` — full flow through the modal asserting the `reconciliation_periods` row.
+- `CSV statement upload parses and writes raw_data with status=processing` — asserts the bank_statement_imports row status, row_count, parsed amounts in pence (e.g. £1500.00 → 150000), date normalisation to ISO, and that csv_column_map is cached.
+- `OFX upload surfaces format-not-yet-supported note rather than crashing` — asserts the parse-error message names "FORWARD: 1h.4", the submit button is disabled, and no period or import rows persist on Cancel.
+
+**Out of scope (deliberate, with FORWARD anchors planted).**
+- Matching engine + ReviewModal — 1h.2.
+- Completion modal + £0.01 balance check + audit-log writes per action — 1h.3.
+- OFX + QIF parsers — `FORWARD: 1h.4` (PROD-GATE flag in `parseStatement.ts`).
+- Curated bank-template presets — PROD-GATE flag in `parseStatement.ts` + `00025_*.sql` near `csv_column_map`.
+- Re-reconciliation flow — `FORWARD: PROD-GATE` flag in `ReconciliationTab.tsx` header.
+- Suspense-item resolution UI — flagged in `ReconciliationTab.tsx`; Phase 3 successor.
+- Server-side enforcement (atomic completion, INSERT-only audit log, period-immutability trigger, sign/type CHECK, retention cron) — financial-rules Edge Function commit; covered by the Security-smoke pass and Data-integrity / auto-protect pass entries.
+
+**Rationale:** Splitting the substantial reconciliation work into three commits keeps each unit small enough to land in green-band context, with clean DECISIONS entries per commit. The persistent-period model (vs implicit-via-`last_reconciled_at` boundaries) cleanly supports the Phase 6 financial-summary report's need to surface `suspense_carried_forward` historically. The `firms.is_demo` column landing in this migration (rather than waiting for the demo-mode-exit commit) costs one ALTER and means every PoC compromise from this commit forward has a column to branch on when its production replacement ships. The PROD-GATE flag convention turns the manifest into a grep-able codebase property rather than a memory hazard.
+
+---
+
 ## 2026-05-07 — pgAudit enablement approach
 
 **Context:** Section 4 requires pgAudit to be enabled before any data migration. The Supabase hosted project does not allow direct superuser SQL for extension creation on the free tier in some cases.

@@ -73,6 +73,7 @@ export interface Database {
           logo_storage_path: string | null
           client_money_account_bank: string | null
           deployment_mode: string | null
+          is_demo: boolean
           created_at: string
           updated_at: string
         }
@@ -93,6 +94,7 @@ export interface Database {
           logo_storage_path?: string | null
           client_money_account_bank?: string | null
           deployment_mode?: string | null
+          is_demo?: boolean
           created_at?: string
           updated_at?: string
         }
@@ -352,6 +354,7 @@ export interface Database {
           current_balance: number
           last_reconciled_at: string | null
           rics_designated: boolean
+          csv_column_map: Json | null
           notes: string | null
           created_at: string
           updated_at: string
@@ -373,6 +376,7 @@ export interface Database {
           current_balance?: number
           last_reconciled_at?: string | null
           rics_designated?: boolean
+          csv_column_map?: Json | null
           notes?: string | null
           created_at?: string
           updated_at?: string
@@ -1392,6 +1396,102 @@ export interface Database {
           synced_at?: string
         }
         Update: Partial<Omit<Database['public']['Tables']['inspection_report_links']['Insert'], 'id'>>
+        Relationships: []
+      }
+      suspense_items: {
+        Row: {
+          id: string
+          firm_id: string
+          bank_statement_import_id: string
+          statement_row_index: number
+          amount: number
+          statement_date: string
+          description: string
+          target_resolution_date: string | null
+          status: string
+          resolved_to_transaction_id: string | null
+          resolution_notes: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          firm_id: string
+          bank_statement_import_id: string
+          statement_row_index: number
+          amount: number
+          statement_date: string
+          description: string
+          target_resolution_date?: string | null
+          status?: string
+          resolved_to_transaction_id?: string | null
+          resolution_notes?: string | null
+          created_at?: string
+        }
+        Update: Partial<Omit<Database['public']['Tables']['suspense_items']['Insert'], 'id'>>
+        Relationships: []
+      }
+      reconciliation_periods: {
+        Row: {
+          id: string
+          firm_id: string
+          bank_account_id: string
+          period_start: string
+          period_end: string
+          status: string
+          completed_at: string | null
+          completed_by: string | null
+          closing_balance_snapshot: number | null
+          suspense_carried_forward: boolean
+          completion_notes: string | null
+          bank_statement_import_id: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          firm_id: string
+          bank_account_id: string
+          period_start: string
+          period_end: string
+          status?: string
+          completed_at?: string | null
+          completed_by?: string | null
+          closing_balance_snapshot?: number | null
+          suspense_carried_forward?: boolean
+          completion_notes?: string | null
+          bank_statement_import_id?: string | null
+          created_at?: string
+        }
+        Update: Partial<Omit<Database['public']['Tables']['reconciliation_periods']['Insert'], 'id'>>
+        Relationships: []
+      }
+      reconciliation_audit_log: {
+        Row: {
+          id: string
+          firm_id: string
+          bank_account_id: string
+          reconciliation_period_id: string | null
+          bank_statement_import_id: string | null
+          action: string
+          actor_id: string
+          acted_at: string
+          before_state: Json | null
+          after_state: Json | null
+          notes: string | null
+        }
+        Insert: {
+          id?: string
+          firm_id: string
+          bank_account_id: string
+          reconciliation_period_id?: string | null
+          bank_statement_import_id?: string | null
+          action: string
+          actor_id: string
+          acted_at?: string
+          before_state?: Json | null
+          after_state?: Json | null
+          notes?: string | null
+        }
+        Update: Partial<Omit<Database['public']['Tables']['reconciliation_audit_log']['Insert'], 'id'>>
         Relationships: []
       }
     }
