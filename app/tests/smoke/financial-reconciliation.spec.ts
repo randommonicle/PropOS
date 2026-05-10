@@ -27,6 +27,19 @@
  *  11. Unmatched — Mark as suspense inserts suspense_items row.
  *  12. Unmatched — Reject writes audit row citing RICS Rule 3.7.
  *
+ * 1h.3 coverage:
+ *  13. Completion blocked when unreconciled transactions remain in period.
+ *  14. Completion blocked with >£0.01 balance discrepancy (smoke injects
+ *      corrupted current_balance via direct UPDATE — bypassing the trigger).
+ *  15. Completion succeeds with no suspense — last_reconciled_at stamped,
+ *      period marked completed, audit row written, import status complete.
+ *  16. Completion with open suspense in period requires completion_notes —
+ *      saves with suspense_carried_forward=true.
+ *  17. Completed period is immutable — Mark complete button absent on
+ *      completed rows.
+ *  2b. Cannot create a second open period for a bank account — partial
+ *      unique index returns 23505 on direct DB insert.
+ *
  * Cleanup unwinds in FK-safe order: reconciliation_audit_log →
  * suspense_items → bank_statement_imports → reconciliation_periods →
  * bank_accounts, scoped to test-prefixed rows.
@@ -622,5 +635,269 @@ test.describe('Property detail — reconciliation', () => {
     const { data: txns } = await supabase
       .from('transactions').select('id').eq('bank_account_id', account.id)
     expect(txns ?? []).toHaveLength(0)
+  })
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 1h.3 — completion + £0.01 balance gate + suspense override + 2b
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** Open the per-account "Mark complete" modal from the Reconciliation tab. */
+  async function openCompleteModal(page: Page, propertyId: string, accountId: string) {
+    await page.goto(`/properties/${propertyId}?tab=reconciliation`)
+    await goToReconciliationTab(page)
+    await page.getByTestId(`recon-complete-${accountId}`).click()
+    await expect(page.getByRole('dialog', { name: /Mark reconciliation complete/i })).toBeVisible()
+  }
+
+  /** Seed a period + import in 'matched' status (i.e. ready for completion).
+   *  Convenience wrapper around seedOpenPeriodWithImport — additionally flips
+   *  the import to 'matched' since 1h.3 only surfaces "Mark complete" past
+   *  that boundary. Caller is responsible for any txns that should sit in the
+   *  period reconciled. */
+  async function seedMatchedPeriod(
+    prop: { id: string; firm_id: string },
+    accountId: string,
+    rows: Array<{ index: number; date: string; amountP: number; description: string }>,
+    period?: { period_start: string; period_end: string },
+  ): Promise<{ periodId: string; importId: string }> {
+    const r = await seedOpenPeriodWithImport(prop, accountId, rows, period)
+    await supabase.from('bank_statement_imports')
+      .update({ status: 'matched', matched_count: rows.length, unmatched_count: 0 })
+      .eq('id', r.importId)
+    return r
+  }
+
+  test('Completion blocked when unreconciled transactions remain in period', async ({ page }) => {
+    const { prop, account } = await seedAccount()
+    // Seed a transaction in the period that's unreconciled.
+    await seedTransaction(prop, account.id, {
+      amountP: 50000, date: '2026-04-15', description: 'Period txn (unreconciled)',
+    })
+    await seedMatchedPeriod(prop, account.id, [
+      { index: 0, date: '2026-04-15', amountP: 50000, description: 'Smoke 13 stmt row' },
+    ])
+
+    await openCompleteModal(page, prop.id, account.id)
+
+    // Pre-flight surfaces the unreconciled-txn block.
+    await expect(page.getByTestId('pf-unreconciled')).toHaveAttribute('data-ok', 'false')
+    await expect(page.getByTestId('pf-unreconciled')).toContainText(/transaction\(s\) in \[2026-04-01, 2026-04-30\] are not yet reconciled/)
+    await expect(page.getByTestId('complete-submit')).toBeDisabled()
+
+    // No completion happened.
+    const { data: per } = await supabase
+      .from('reconciliation_periods').select('status').eq('bank_account_id', account.id).single()
+    expect(per!.status).toBe('open')
+  })
+
+  test('Completion blocked with >£0.01 balance discrepancy (corrupted current_balance)', async ({ page }) => {
+    const { prop, account } = await seedAccount()
+    // Seed a reconciled transaction so the unreconciled-count check passes.
+    const { error: txnInsertErr, data: txn } = await supabase.from('transactions').insert({
+      firm_id: prop.firm_id, property_id: prop.id, bank_account_id: account.id,
+      transaction_type: 'receipt', transaction_date: '2026-04-15',
+      amount: 250.00,
+      description: `${TXN_PREFIX} balance-check txn`,
+      reconciled: true, reconciled_at: new Date().toISOString(),
+    }).select('id').single()
+    if (txnInsertErr || !txn) throw new Error(txnInsertErr?.message)
+
+    // Inject a balance divergence via direct UPDATE — the trigger only fires
+    // on transactions changes, so a direct UPDATE on bank_accounts is allowed
+    // and creates the divergence the £0.01 gate is designed to catch.
+    const { error: corruptErr } = await supabase
+      .from('bank_accounts').update({ current_balance: 251.00 }).eq('id', account.id)
+    if (corruptErr) throw new Error(corruptErr.message)
+
+    await seedMatchedPeriod(prop, account.id, [
+      { index: 0, date: '2026-04-15', amountP: 25000, description: 'Smoke 14 stmt row' },
+    ])
+
+    await openCompleteModal(page, prop.id, account.id)
+    await expect(page.getByTestId('pf-balance')).toHaveAttribute('data-ok', 'false')
+    await expect(page.getByTestId('pf-balance')).toContainText(/Discrepancy of £1\.00/)
+    await expect(page.getByTestId('pf-balance')).toContainText(/Spec §5\.3 blocks completion/)
+    await expect(page.getByTestId('complete-submit')).toBeDisabled()
+
+    const { data: per } = await supabase
+      .from('reconciliation_periods').select('status').eq('bank_account_id', account.id).single()
+    expect(per!.status).toBe('open')
+  })
+
+  test('Completion succeeds with no suspense — period completed + audit row + last_reconciled_at', async ({ page }) => {
+    const { prop, account } = await seedAccount()
+    // Reconciled transaction so unreconciled-count = 0; balance trigger keeps current_balance in sync.
+    const { error: txnErr } = await supabase.from('transactions').insert({
+      firm_id: prop.firm_id, property_id: prop.id, bank_account_id: account.id,
+      transaction_type: 'receipt', transaction_date: '2026-04-15',
+      amount: 100.00,
+      description: `${TXN_PREFIX} smoke 15 reconciled`,
+      reconciled: true, reconciled_at: new Date().toISOString(),
+    })
+    if (txnErr) throw new Error(txnErr.message)
+
+    const { periodId, importId } = await seedMatchedPeriod(prop, account.id, [
+      { index: 0, date: '2026-04-15', amountP: 10000, description: 'Smoke 15 stmt row' },
+    ])
+
+    await openCompleteModal(page, prop.id, account.id)
+    await expect(page.getByTestId('pf-unmatched')).toHaveAttribute('data-ok', 'true')
+    await expect(page.getByTestId('pf-unreconciled')).toHaveAttribute('data-ok', 'true')
+    await expect(page.getByTestId('pf-balance')).toHaveAttribute('data-ok', 'true')
+    await page.getByTestId('complete-submit').click()
+
+    // Modal closes after completion.
+    await expect(page.getByRole('dialog', { name: /Mark reconciliation complete/i })).toHaveCount(0)
+
+    // Period marked completed with the audit columns stamped.
+    const { data: per } = await supabase
+      .from('reconciliation_periods')
+      .select('status, completed_at, completed_by, closing_balance_snapshot, suspense_carried_forward')
+      .eq('id', periodId).single()
+    expect(per!.status).toBe('completed')
+    expect(per!.completed_at).not.toBeNull()
+    expect(per!.completed_by).not.toBeNull()
+    expect(Number(per!.closing_balance_snapshot)).toBe(100)
+    expect(per!.suspense_carried_forward).toBe(false)
+
+    // bank_accounts.last_reconciled_at stamped.
+    const { data: acc } = await supabase
+      .from('bank_accounts').select('last_reconciled_at').eq('id', account.id).single()
+    expect(acc!.last_reconciled_at).not.toBeNull()
+
+    // Import status final.
+    const { data: imp } = await supabase
+      .from('bank_statement_imports').select('status').eq('id', importId).single()
+    expect(imp!.status).toBe('complete')
+
+    // Audit row.
+    const { data: audit } = await supabase
+      .from('reconciliation_audit_log').select('action, notes, after_state')
+      .eq('bank_account_id', account.id).eq('action', 'completion')
+    expect(audit).toHaveLength(1)
+    expect(audit![0].notes).toContain('RICS Rule 3.7')
+    expect(audit![0].notes).toContain('no carried-forward suspense')
+  })
+
+  test('Completion with open suspense in period requires completion_notes — saves with suspense_carried_forward=true', async ({ page }) => {
+    const { prop, account } = await seedAccount()
+    // Reconciled txn for the no-unreconciled-txn check.
+    await supabase.from('transactions').insert({
+      firm_id: prop.firm_id, property_id: prop.id, bank_account_id: account.id,
+      transaction_type: 'receipt', transaction_date: '2026-04-15',
+      amount: 50.00,
+      description: `${TXN_PREFIX} smoke 16 reconciled`,
+      reconciled: true, reconciled_at: new Date().toISOString(),
+    })
+
+    const { periodId, importId } = await seedMatchedPeriod(prop, account.id, [
+      { index: 0, date: '2026-04-15', amountP: 5000, description: 'Smoke 16 stmt row' },
+    ])
+
+    // Seed an open suspense item dated within the period.
+    await supabase.from('suspense_items').insert({
+      firm_id: prop.firm_id,
+      bank_statement_import_id: importId,
+      statement_row_index: 0,
+      amount: 99.99,
+      statement_date: '2026-04-20',
+      description: 'Smoke 16 suspense row',
+      target_resolution_date: '2026-05-30',
+      status: 'open',
+      resolution_notes: 'Pending bank confirmation',
+    })
+
+    await openCompleteModal(page, prop.id, account.id)
+
+    // Override card visible. Submit disabled until checkbox + notes complete.
+    await expect(page.getByTestId('carry-forward-checkbox')).toBeVisible()
+    await expect(page.getByTestId('completion-notes')).toBeVisible()
+    await expect(page.getByTestId('complete-submit')).toBeDisabled()
+
+    await page.getByTestId('carry-forward-checkbox').check()
+    // Still disabled until notes are filled.
+    await expect(page.getByTestId('complete-submit')).toBeDisabled()
+    await page.getByTestId('completion-notes').fill('Awaiting clearing-bank confirmation; carried into next period per agreed treatment.')
+    await expect(page.getByTestId('complete-submit')).toBeEnabled()
+    await page.getByTestId('complete-submit').click()
+    await expect(page.getByRole('dialog', { name: /Mark reconciliation complete/i })).toHaveCount(0)
+
+    const { data: per } = await supabase
+      .from('reconciliation_periods')
+      .select('status, suspense_carried_forward, completion_notes')
+      .eq('id', periodId).single()
+    expect(per!.status).toBe('completed')
+    expect(per!.suspense_carried_forward).toBe(true)
+    expect(per!.completion_notes).toContain('Awaiting clearing-bank confirmation')
+
+    const { data: audit } = await supabase
+      .from('reconciliation_audit_log').select('notes')
+      .eq('bank_account_id', account.id).eq('action', 'completion')
+    expect(audit).toHaveLength(1)
+    expect(audit![0].notes).toContain('1 suspense item(s) carried forward')
+  })
+
+  test('Completed period is immutable — Mark complete button absent on completed rows', async ({ page }) => {
+    const { prop, account } = await seedAccount()
+    await supabase.from('transactions').insert({
+      firm_id: prop.firm_id, property_id: prop.id, bank_account_id: account.id,
+      transaction_type: 'receipt', transaction_date: '2026-04-15',
+      amount: 100.00,
+      description: `${TXN_PREFIX} smoke 17 reconciled`,
+      reconciled: true, reconciled_at: new Date().toISOString(),
+    })
+    const { periodId } = await seedMatchedPeriod(prop, account.id, [
+      { index: 0, date: '2026-04-15', amountP: 10000, description: 'Smoke 17 stmt row' },
+    ])
+
+    // Drive the period to completed via direct DB writes (faster than UI).
+    const userIdRow = await supabase.from('users').select('id').eq('email', 'admin@propos.local').single()
+    await supabase.from('reconciliation_periods').update({
+      status: 'completed',
+      completed_at: new Date().toISOString(),
+      completed_by: userIdRow.data!.id,
+      closing_balance_snapshot: 100,
+      suspense_carried_forward: false,
+    }).eq('id', periodId)
+    await supabase.from('bank_statement_imports')
+      .update({ status: 'complete' })
+      .eq('bank_account_id', account.id)
+    await supabase.from('bank_accounts')
+      .update({ last_reconciled_at: new Date().toISOString() })
+      .eq('id', account.id)
+
+    await page.goto(`/properties/${prop.id}?tab=reconciliation`)
+    await goToReconciliationTab(page)
+
+    // Reconciled-to date badge visible (replaces the "in progress" / never).
+    await expect(page.getByTestId(`recon-status-${account.id}`)).toContainText(/Reconciled to/)
+    // Mark complete button is gone (no openPeriod after completion → canComplete=false).
+    await expect(page.getByTestId(`recon-complete-${account.id}`)).toHaveCount(0)
+    // Start reconciliation button is back (lets PM open a fresh period).
+    await expect(page.getByTestId(`recon-start-${account.id}`)).toContainText(/Start reconciliation/)
+  })
+
+  test('2b — cannot create a second open reconciliation_period for the same bank account', async () => {
+    // Pure-DB smoke. Verifies the partial unique index in 00025
+    // (uq_recperiod_one_open_per_account WHERE status='open') rejects a
+    // second open row with code 23505. UI-level protection rides on this
+    // (StatementImportModal surfaces a friendly message on 23505).
+    const { prop, account } = await seedAccount()
+    const { error: firstErr } = await supabase
+      .from('reconciliation_periods')
+      .insert({
+        firm_id: prop.firm_id, bank_account_id: account.id,
+        period_start: '2026-04-01', period_end: '2026-04-30', status: 'open',
+      })
+    expect(firstErr).toBeNull()
+
+    const { error: secondErr } = await supabase
+      .from('reconciliation_periods')
+      .insert({
+        firm_id: prop.firm_id, bank_account_id: account.id,
+        period_start: '2026-05-01', period_end: '2026-05-31', status: 'open',
+      })
+    expect(secondErr).not.toBeNull()
+    expect(secondErr!.code).toBe('23505')
   })
 })

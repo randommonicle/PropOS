@@ -30,8 +30,11 @@
  *      authorise the transaction is created from the snapshot and the
  *      payment_authorisations row is linked. See PaymentAuthorisationsTab.
  *   4. Reconciled lock: `reconciled=true` rows open with all fields disabled
- *      and surface a regulatory note. The only path to undo a reconciliation
- *      is the bank reconciliation workflow (deferred to its own commit).
+ *      and surface a regulatory note. Reconciliation lives on the per-property
+ *      Reconciliation tab (1h.1 / 1h.2 / 1h.3 — ReconciliationTab,
+ *      StatementImportModal, ReconciliationReviewModal,
+ *      ReconciliationCompleteModal). Re-reconciliation flow (un-mark a
+ *      reconciled transaction) is deferred — see DECISIONS forward entry.
  *   5. Statement-import lock: `statement_import_id IS NOT NULL` rows are
  *      similarly locked. Statement-imported transactions are part of an
  *      upstream audit chain (CSV / OFX / Open Banking) and immutable from UI.

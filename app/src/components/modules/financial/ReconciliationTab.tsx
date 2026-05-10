@@ -41,11 +41,12 @@ import { supabase } from '@/lib/supabase'
 import {
   Card, CardContent, Button, Badge,
 } from '@/components/ui'
-import { Upload, Play, AlertTriangle, X, CheckCircle2, Clock } from 'lucide-react'
+import { Upload, Play, AlertTriangle, X, CheckCircle2, Clock, Flag } from 'lucide-react'
 import { formatDate, todayISODate } from '@/lib/utils'
 import { formatPounds } from '@/lib/money'
 import { StatementImportModal } from './StatementImportModal'
 import { ReconciliationReviewModal } from './ReconciliationReviewModal'
+import { ReconciliationCompleteModal } from './ReconciliationCompleteModal'
 import type { Database } from '@/types/database'
 
 type BankAccount             = Database['public']['Tables']['bank_accounts']['Row']
@@ -78,6 +79,9 @@ export function ReconciliationTab({
    *  period already has a linked bank_statement_import, we open the review
    *  modal; otherwise the import modal. */
   const [activeAccountId, setActiveAccountId] = useState<string | null>(null)
+  /** Separate state for the completion modal — driven by the per-row "Mark
+   *  complete" button on rows where the import is in 'matched' or beyond. */
+  const [completingAccountId, setCompletingAccountId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     const { data: accountsData, error: accErr } = await supabase
@@ -154,6 +158,7 @@ export function ReconciliationTab({
               key={state.account.id}
               state={state}
               onStart={() => setActiveAccountId(state.account.id)}
+              onComplete={() => setCompletingAccountId(state.account.id)}
             />
           ))}
         </div>
@@ -197,18 +202,36 @@ export function ReconciliationTab({
           />
         )
       })()}
+
+      {completingAccountId && (() => {
+        const state = accountStates.find(s => s.account.id === completingAccountId)
+        if (!state || !state.openPeriod || !state.openPeriodImport) return null
+        return (
+          <ReconciliationCompleteModal
+            firmId={firmId}
+            account={state.account}
+            period={state.openPeriod}
+            importRow={state.openPeriodImport}
+            onClose={() => setCompletingAccountId(null)}
+            onCompleted={() => { setCompletingAccountId(null); load() }}
+          />
+        )
+      })()}
     </section>
   )
 }
 
 // ── Single account row ──────────────────────────────────────────────────────
 function AccountReconciliationCard({
-  state, onStart,
+  state, onStart, onComplete,
 }: {
   state: AccountReconState
   onStart: () => void
+  onComplete: () => void
 }) {
   const { account, openPeriod, openPeriodImport, lastCompletedPeriod, completedPeriods } = state
+  const canComplete = !!openPeriod && !!openPeriodImport
+    && (openPeriodImport.status === 'matched' || openPeriodImport.status === 'complete')
 
   const reconciledLabel = account.last_reconciled_at
     ? `Reconciled to ${formatDate(account.last_reconciled_at)}`
@@ -257,7 +280,7 @@ function AccountReconciliationCard({
             </div>
             <div>{statusBadge}</div>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             <Button
               size="sm"
               onClick={onStart}
@@ -269,6 +292,17 @@ function AccountReconciliationCard({
               {openPeriod ? <Play className="h-4 w-4 mr-1" /> : <Upload className="h-4 w-4 mr-1" />}
               {openPeriod ? 'Continue reconciliation' : 'Start reconciliation'}
             </Button>
+            {canComplete && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={onComplete}
+                data-testid={`recon-complete-${account.id}`}
+                aria-label={`Mark reconciliation complete for ${account.account_name}`}
+              >
+                <Flag className="h-4 w-4 mr-1" /> Mark complete
+              </Button>
+            )}
           </div>
         </div>
 
