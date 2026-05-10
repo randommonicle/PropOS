@@ -16,7 +16,7 @@
  *   the financial-rules Edge Function in a later commit; the client guard is
  *   sufficient for 1c because RLS already restricts writes to firm admins / PMs.
  *
- * Delete policy (mirrors bank-accounts, RICS Client Money + TPI audit retention):
+ * Delete policy (mirrors bank-accounts, RICS Rule 3.7 evidence trail + TPI Consumer Charter & Standards Edition 3 audit retention):
  *   Hard-delete is permitted ONLY when status='draft' AND no FK references exist
  *   (budget_line_items / demands). Any other state forces the PM to keep the row.
  */
@@ -87,9 +87,10 @@ export function ServiceChargeAccountsTab({
     // status implies budget / charge / reconciliation activity that must be preserved.
     if (account.status !== 'draft') {
       setDeleteErr(
-        `Cannot delete — status is "${account.status}". Per RICS Client Money ` +
-        'Rule 4.7 and TPI Code §5, only draft accounts may be hard-deleted. ' +
-        'Active / reconciling / finalised accounts must be retained for audit.'
+        `Cannot delete — status is "${account.status}". Per RICS Rule 3.7 ` +
+        'evidence trail and TPI Consumer Charter & Standards Edition 3, only ' +
+        'draft accounts may be hard-deleted. Active / reconciling / finalised ' +
+        'accounts must be retained for audit.'
       )
       return
     }
@@ -100,9 +101,10 @@ export function ServiceChargeAccountsTab({
       setDeleteErr(
         error.code === '23503'
           ? 'Cannot delete — this account has linked budget line items or demands. ' +
-            'Audit-history retention requirements (RICS Rule 4.7 / TPI §5) prevent ' +
-            'removal. Remove the linked records first if they are also draft, or ' +
-            'leave the account in place.'
+            'Audit-history retention requirements (RICS Rule 3.7 evidence trail; ' +
+            'TPI Consumer Charter & Standards Edition 3) prevent removal. Remove ' +
+            'the linked records first if they are also draft, or leave the account ' +
+            'in place.'
           : error.message
       )
       return

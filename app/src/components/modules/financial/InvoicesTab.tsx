@@ -213,7 +213,7 @@ export function InvoicesTab({
     if (error) {
       setDeleteErr(
         error.code === '23503'
-          ? 'Cannot delete — a transaction references this invoice. The audit trail must be preserved (RICS Client money handling).'
+          ? 'Cannot delete — a transaction references this invoice. The audit trail must be preserved (RICS Rule 3.7 evidence trail; TPI Consumer Charter & Standards Edition 3).'
           : error.message,
       )
       return

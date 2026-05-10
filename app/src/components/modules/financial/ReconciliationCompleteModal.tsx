@@ -187,27 +187,48 @@ export function ReconciliationCompleteModal({
         .eq('id', importRow.id)
       if (impErr) throw new Error(impErr.message)
 
-      // 4. Audit log: completion event.
-      await recordAction({
-        firmId,
-        bankAccountId:           account.id,
-        reconciliationPeriodId:  period.id,
-        bankStatementImportId:   importRow.id,
-        action:                  'completion',
-        actorId:                 userId,
-        beforeState: {
-          period_status: 'open',
-        } as never,
-        afterState: {
-          period_status:            'completed',
-          closing_balance_snapshot: closingBalance,
-          suspense_carried_forward: requiresCarryForward,
-          carried_forward_count:    preflight.openSuspenseInPeriod.length,
-        } as never,
-        notes: requiresCarryForward
-          ? `${RICS_3_7_NOTE} — completion with ${preflight.openSuspenseInPeriod.length} suspense item(s) carried forward: ${completionNotes.trim()}`
-          : `${RICS_3_7_NOTE} — period completed (no carried-forward suspense)`,
-      })
+      // 4. Audit log: completion event. RICS Rule 3.7 evidence trail
+      // load-bearing — if this row is missing, the regulatory artefact for the
+      // completion event is gone. Steps 1-3 have already committed by this
+      // point (period flipped to 'completed', bank account stamped,
+      // import status finalised). Wrap separately so a failure here surfaces
+      // a manual-repair SQL hint instead of the generic catch below (audit
+      // Tier-1 B-5).
+      try {
+        await recordAction({
+          firmId,
+          bankAccountId:           account.id,
+          reconciliationPeriodId:  period.id,
+          bankStatementImportId:   importRow.id,
+          action:                  'completion',
+          actorId:                 userId,
+          beforeState: {
+            period_status: 'open',
+          } as never,
+          afterState: {
+            period_status:            'completed',
+            closing_balance_snapshot: closingBalance,
+            suspense_carried_forward: requiresCarryForward,
+            carried_forward_count:    preflight.openSuspenseInPeriod.length,
+          } as never,
+          notes: requiresCarryForward
+            ? `${RICS_3_7_NOTE} — completion with ${preflight.openSuspenseInPeriod.length} suspense item(s) carried forward: ${completionNotes.trim()}`
+            : `${RICS_3_7_NOTE} — period completed (no carried-forward suspense)`,
+        })
+      } catch (auditErr) {
+        const msg = auditErr instanceof Error ? auditErr.message : String(auditErr)
+        setError(
+          `Reconciliation completion committed (period ${period.id} now 'completed', bank account ` +
+          `stamped, statement import finalised) BUT the reconciliation_audit_log row failed to write: ` +
+          `${msg}. RICS Rule 3.7 evidence trail requires this row — manual repair via SQL: ` +
+          `INSERT INTO reconciliation_audit_log (firm_id, bank_account_id, reconciliation_period_id, ` +
+          `bank_statement_import_id, action, actor_id, before_state, after_state, notes) VALUES ` +
+          `('${firmId}', '${account.id}', '${period.id}', '${importRow.id}', 'completion', '${userId}', ` +
+          `'{"period_status":"open"}'::jsonb, '{"period_status":"completed"}'::jsonb, ` +
+          `'${RICS_3_7_NOTE} — period completed (manual repair after audit-log write failed)').`,
+        )
+        return
+      }
 
       onCompleted()
     } catch (err) {

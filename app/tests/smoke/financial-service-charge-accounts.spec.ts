@@ -224,7 +224,7 @@ test.describe('Property detail — service charge accounts', () => {
     await expect(page.getByRole('cell', { name: '2204', exact: true })).not.toBeVisible()
   })
 
-  test('non-draft account cannot be hard-deleted (RICS Rule 4.7 / TPI §5)', async ({ page }) => {
+  test('non-draft account cannot be hard-deleted (RICS Rule 3.7 evidence trail; TPI)', async ({ page }) => {
     // Seed: an active SCA with a budget_line_items child to also exercise the FK
     // path. The pre-FK guard fires first because status != draft.
     await supabase.auth.signInWithPassword({ email: 'admin@propos.local', password: 'PropOS2026!' })
@@ -259,8 +259,10 @@ test.describe('Property detail — service charge accounts', () => {
     await row.getByRole('button', { name: /Delete 2205 service charge account/ }).click()
     await page.getByRole('button', { name: 'Confirm delete' }).click()
 
-    // Status guard fires first — message names RICS Rule 4.7 and TPI §5.
-    await expect(page.getByText(/RICS Client Money Rule 4\.7/i)).toBeVisible()
+    // Status guard fires first — message names RICS Rule 3.7 evidence trail
+    // and TPI Consumer Charter & Standards Edition 3 (canonical anchors per
+    // audit Tier-1 R-4).
+    await expect(page.getByText(/RICS Rule 3\.7 evidence trail/i)).toBeVisible()
     await expect(page.getByRole('cell', { name: '2205', exact: true })).toBeVisible()
   })
 })
