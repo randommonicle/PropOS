@@ -1,9 +1,11 @@
 /**
  * @file financial-reconciliation.spec.ts
- * @description Smoke tests for the per-property Reconciliation tab and
- * statement import pipeline. Spec §5.3 — Bank Reconciliation Engine.
+ * @description Smoke tests for the per-property Reconciliation tab — the
+ * statement import pipeline (1h.1), three-pass matching engine + review UI
+ * actions (1h.2), and completion + £0.01 balance gate (1h.3 — to come).
+ * Spec §5.3 — Bank Reconciliation Engine.
  *
- * 1h.1 coverage (this file at this commit):
+ * 1h.1 coverage:
  *   1. Reconciliation tab renders 9th and lists per-account periods.
  *   2. PM starts a new reconciliation period — reconciliation_periods row
  *      created with status='open'.
@@ -11,8 +13,19 @@
  *      with status='processing'.
  *   4. Unsupported format (OFX) surfaces FORWARD note rather than crashing.
  *
- * 1h.2 / 1h.3 smokes (matching engine + completion) extend this file in
- * subsequent commits.
+ * 1h.2 coverage:
+ *   5. Pass-1 exact match auto-matches with confidence 1.00 + audit row.
+ *   6. Pass-2 strong match shows in Suggested with 80% — Confirm + audit row.
+ *   7. Pass-3 weak match (amount-to-penny + ±30 days subclause) shows in
+ *      Review carefully with 50% — Confirm + audit row.
+ *   7b. Pass-3 weak match (£0.50 tolerance + ±7 days subclause) — separate
+ *       code path; locks the foreign-card-rounding tolerance branch.
+ *   8. Dedup property — pass-1 match removes its txn from pass-2/pass-3
+ *      candidate pools.
+ *   9. Unmatched — Create new transaction prefills + saves with reconciled.
+ *  10. Unmatched — Match manually picker filters to unreconciled txns.
+ *  11. Unmatched — Mark as suspense inserts suspense_items row.
+ *  12. Unmatched — Reject writes audit row citing RICS Rule 3.7.
  *
  * Cleanup unwinds in FK-safe order: reconciliation_audit_log →
  * suspense_items → bank_statement_imports → reconciliation_periods →
@@ -28,7 +41,8 @@ const supabase = createClient(
   process.env.VITE_SUPABASE_ANON_KEY ?? 'sb_publishable_M_cBRZKdJtIunGAUFBhD1g_SYMADNyT',
 )
 
-const BA_PREFIX = 'Smoke RECON BA'
+const BA_PREFIX  = 'Smoke RECON BA'
+const TXN_PREFIX = 'Smoke RECON TXN'
 
 async function goToFirstProperty(page: Page) {
   await page.goto('/properties')
@@ -116,10 +130,99 @@ test.describe('Property detail — reconciliation', () => {
     if (importIds.length) {
       await supabase.from('suspense_items').delete().in('bank_statement_import_id', importIds)
     }
+    // Transactions get reconciled / created during 1h.2 smokes — sweep them.
+    await supabase.from('transactions').delete().in('bank_account_id', accountIds)
     await supabase.from('reconciliation_periods').delete().in('bank_account_id', accountIds)
     await supabase.from('bank_statement_imports').delete().in('bank_account_id', accountIds)
     await supabase.from('bank_accounts').delete().in('id', accountIds)
   })
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 1h.2 — matching engine + review UI helpers
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** Seed a transactions row used as a matching candidate. amountP is the
+   *  signed pence value the spec uses (positive = receipt). */
+  async function seedTransaction(
+    prop: { id: string; firm_id: string },
+    accountId: string,
+    fields: { amountP: number; date: string; description: string; reference?: string; payee?: string },
+  ): Promise<{ id: string }> {
+    const amountPounds = fields.amountP / 100
+    const txnType = fields.amountP > 0 ? 'receipt' : 'payment'
+    const { data, error } = await supabase
+      .from('transactions')
+      .insert({
+        firm_id:          prop.firm_id,
+        property_id:      prop.id,
+        bank_account_id:  accountId,
+        transaction_type: txnType,
+        transaction_date: fields.date,
+        amount:           amountPounds,
+        description:      `${TXN_PREFIX} ${fields.description}`,
+        reference:        fields.reference ?? null,
+        payee_payer:      fields.payee ?? null,
+        reconciled:       false,
+      })
+      .select('id').single()
+    if (error || !data) throw new Error(`Failed to seed transaction: ${error?.message}`)
+    return data
+  }
+
+  /** Seed an open reconciliation_period + a bank_statement_imports row with
+   *  raw_data populated, ready for the review modal to consume. */
+  async function seedOpenPeriodWithImport(
+    prop: { id: string; firm_id: string },
+    accountId: string,
+    rows: Array<{ index: number; date: string; amountP: number; description: string; reference?: string | null; payee?: string | null }>,
+    period?: { period_start: string; period_end: string },
+  ): Promise<{ periodId: string; importId: string }> {
+    const periodDates = period ?? { period_start: '2026-04-01', period_end: '2026-04-30' }
+    const { data: imp, error: impErr } = await supabase
+      .from('bank_statement_imports')
+      .insert({
+        firm_id:         prop.firm_id,
+        bank_account_id: accountId,
+        filename:        'smoke-recon.csv',
+        row_count:       rows.length,
+        matched_count:   0,
+        unmatched_count: rows.length,
+        raw_data:        rows.map(r => ({
+          index:       r.index,
+          date:        r.date,
+          amountP:     r.amountP,
+          description: r.description,
+          reference:   r.reference ?? null,
+          payee:       r.payee ?? null,
+          raw:         {},
+        })) as never,
+        status:          'processing',
+      })
+      .select('id').single()
+    if (impErr || !imp) throw new Error(`Failed to seed import: ${impErr?.message}`)
+
+    const { data: per, error: perErr } = await supabase
+      .from('reconciliation_periods')
+      .insert({
+        firm_id:                  prop.firm_id,
+        bank_account_id:          accountId,
+        period_start:             periodDates.period_start,
+        period_end:               periodDates.period_end,
+        status:                   'open',
+        bank_statement_import_id: imp.id,
+      })
+      .select('id').single()
+    if (perErr || !per) throw new Error(`Failed to seed period: ${perErr?.message}`)
+    return { periodId: per.id, importId: imp.id }
+  }
+
+  async function openReviewModal(page: Page, propertyId: string, accountId: string) {
+    await page.goto(`/properties/${propertyId}?tab=reconciliation`)
+    await goToReconciliationTab(page)
+    await page.getByTestId(`recon-start-${accountId}`).click()
+    await expect(page.getByRole('dialog', { name: /Reconciliation review/i })).toBeVisible()
+  }
+
 
   test('Reconciliation tab renders 9th and lists per-account state', async ({ page }) => {
     const { prop, account } = await seedAccount()
@@ -248,5 +351,276 @@ test.describe('Property detail — reconciliation', () => {
     const { data: imports } = await supabase
       .from('bank_statement_imports').select('id').eq('bank_account_id', account.id)
     expect(imports).toHaveLength(0)
+  })
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 1h.2 — three-pass matching engine + review UI
+  // ─────────────────────────────────────────────────────────────────────────
+
+  test('Pass-1 exact match — auto-matched with confidence 1.00 + audit row', async ({ page }) => {
+    const { prop, account } = await seedAccount()
+    const txn = await seedTransaction(prop, account.id, {
+      amountP: 10000, date: '2026-04-15', description: 'Pass-1 candidate', reference: 'INV-PASS1',
+    })
+    await seedOpenPeriodWithImport(prop, account.id, [
+      { index: 0, date: '2026-04-16', amountP: 10000, description: 'Smoke pass-1 stmt row', reference: 'INV-PASS1' },
+    ])
+
+    await openReviewModal(page, prop.id, account.id)
+    // Pass-1 auto-applies on modal open. Wait for the matched row to render in
+    // the auto-matched section (UI signal before DB query — race pattern).
+    await expect(page.getByText('Auto-matched (pass 1)')).toBeVisible()
+    await expect(page.getByTestId('stmt-row-0')).toBeVisible()
+
+    // DB: transaction.reconciled = true.
+    const { data: reload } = await supabase
+      .from('transactions').select('reconciled, statement_import_id, reconciled_by').eq('id', txn.id).single()
+    expect(reload!.reconciled).toBe(true)
+    expect(reload!.statement_import_id).not.toBeNull()
+
+    // DB: audit row exists with action=auto_match and confidence in notes.
+    const { data: audit } = await supabase
+      .from('reconciliation_audit_log').select('action, notes')
+      .eq('bank_account_id', account.id).eq('action', 'auto_match')
+    expect(audit).toHaveLength(1)
+    expect(audit![0].notes).toContain('RICS Rule 3.7')
+    expect(audit![0].notes).toContain('confidence 1.00')
+
+    // Import status moved to 'matched'.
+    const { data: imp } = await supabase
+      .from('bank_statement_imports').select('status, matched_count, unmatched_count')
+      .eq('bank_account_id', account.id).single()
+    expect(imp!.status).toBe('matched')
+    expect(imp!.matched_count).toBe(1)
+    expect(imp!.unmatched_count).toBe(0)
+  })
+
+  test('Pass-2 strong match — Suggested with 80% badge — Confirm + audit row', async ({ page }) => {
+    const { prop, account } = await seedAccount()
+    const txn = await seedTransaction(prop, account.id, {
+      amountP: 20000, date: '2026-04-10', description: 'Pass-2 candidate', reference: 'OTHER-REF',
+    })
+    await seedOpenPeriodWithImport(prop, account.id, [
+      // Same amount, 5 days apart, different reference => pass 2 (not 1).
+      { index: 0, date: '2026-04-15', amountP: 20000, description: 'Smoke pass-2 stmt row', reference: 'STMT-REF' },
+    ])
+
+    await openReviewModal(page, prop.id, account.id)
+    await expect(page.getByText('Suggested matches (pass 2)')).toBeVisible()
+    await expect(page.getByTestId('confirm-pass-0')).toBeVisible()
+    await page.getByTestId('confirm-pass-0').click()
+
+    // Wait for Suggested section to empty (UI signal before DB).
+    await expect(page.getByTestId('confirm-pass-0')).toHaveCount(0)
+
+    const { data: reload } = await supabase
+      .from('transactions').select('reconciled').eq('id', txn.id).single()
+    expect(reload!.reconciled).toBe(true)
+
+    const { data: audit } = await supabase
+      .from('reconciliation_audit_log').select('action, notes')
+      .eq('bank_account_id', account.id).eq('action', 'manual_match')
+    expect(audit!.length).toBeGreaterThanOrEqual(1)
+    expect(audit![0].notes).toContain('RICS Rule 3.7')
+    expect(audit![0].notes).toContain('confidence 0.80')
+  })
+
+  test('Pass-3 weak match (amount-to-penny + ±30 days subclause) — Review carefully + Confirm', async ({ page }) => {
+    const { prop, account } = await seedAccount()
+    const txn = await seedTransaction(prop, account.id, {
+      amountP: 30000, date: '2026-04-01', description: 'Pass-3 subclause-A candidate',
+    })
+    await seedOpenPeriodWithImport(prop, account.id, [
+      // Same amount-to-penny, 24 days apart (within 30, > 7) => pass 3 subclause A.
+      { index: 0, date: '2026-04-25', amountP: 30000, description: 'Smoke pass-3a stmt row' },
+    ])
+
+    await openReviewModal(page, prop.id, account.id)
+    await expect(page.getByText('Review carefully (pass 3)')).toBeVisible()
+    await page.getByTestId('confirm-pass-0').click()
+    await expect(page.getByTestId('confirm-pass-0')).toHaveCount(0)
+
+    const { data: reload } = await supabase
+      .from('transactions').select('reconciled').eq('id', txn.id).single()
+    expect(reload!.reconciled).toBe(true)
+
+    const { data: audit } = await supabase
+      .from('reconciliation_audit_log').select('notes')
+      .eq('bank_account_id', account.id).eq('action', 'manual_match')
+    expect(audit!.some(a => a.notes!.includes('confidence 0.50'))).toBe(true)
+  })
+
+  test('Pass-3 weak match (£0.50 tolerance + ±7 days subclause — foreign card rounding)', async ({ page }) => {
+    // Smoke 7b — locks the disjunctive Pass-3 subclause B path. Different
+    // code branch from smoke 7's amount-to-penny + ±30-day path.
+    const { prop, account } = await seedAccount()
+    const txn = await seedTransaction(prop, account.id, {
+      amountP: 10000, date: '2026-04-15', description: 'Pass-3 subclause-B candidate',
+    })
+    await seedOpenPeriodWithImport(prop, account.id, [
+      // Amount differs by 30p (within 50p), date 2 days apart (within 7) =>
+      // pass 3 subclause B. Pass 1 / 2 require amount-to-penny so cannot match.
+      { index: 0, date: '2026-04-17', amountP: 10030, description: 'Smoke pass-3b stmt row' },
+    ])
+
+    await openReviewModal(page, prop.id, account.id)
+    await expect(page.getByText('Review carefully (pass 3)')).toBeVisible()
+    await page.getByTestId('confirm-pass-0').click()
+    await expect(page.getByTestId('confirm-pass-0')).toHaveCount(0)
+
+    const { data: reload } = await supabase
+      .from('transactions').select('reconciled').eq('id', txn.id).single()
+    expect(reload!.reconciled).toBe(true)
+  })
+
+  test('Dedup — pass-1 match removes its txn from pass-2 candidate pool', async ({ page }) => {
+    const { prop, account } = await seedAccount()
+    // Two txns at £100 on 2026-04-15. txnA has ref "A"; txnB has different ref.
+    const txnA = await seedTransaction(prop, account.id, {
+      amountP: 10000, date: '2026-04-15', description: 'Dedup A', reference: 'DEDUP-A',
+    })
+    const txnB = await seedTransaction(prop, account.id, {
+      amountP: 10000, date: '2026-04-15', description: 'Dedup B', reference: 'DEDUP-B',
+    })
+    // Two stmt rows, both £100, both 2026-04-15. Row 0 ref "DEDUP-A" pass-1
+    // matches txnA. Row 1 has no ref — pass-2 must match txnB (txnA already used).
+    await seedOpenPeriodWithImport(prop, account.id, [
+      { index: 0, date: '2026-04-15', amountP: 10000, description: 'Dedup stmt 0', reference: 'DEDUP-A' },
+      { index: 1, date: '2026-04-15', amountP: 10000, description: 'Dedup stmt 1' },
+    ])
+
+    await openReviewModal(page, prop.id, account.id)
+    // Wait for both sections to populate.
+    await expect(page.getByText('Auto-matched (pass 1)')).toBeVisible()
+    await expect(page.getByText('Suggested matches (pass 2)')).toBeVisible()
+
+    // After auto-apply: txnA reconciled (pass 1). txnB not yet reconciled.
+    const { data: a } = await supabase
+      .from('transactions').select('reconciled').eq('id', txnA.id).single()
+    expect(a!.reconciled).toBe(true)
+    const { data: b } = await supabase
+      .from('transactions').select('reconciled').eq('id', txnB.id).single()
+    expect(b!.reconciled).toBe(false)
+
+    // Click Confirm on row 1 — should match txnB (only remaining candidate).
+    await page.getByTestId('confirm-pass-1').click()
+    await expect(page.getByTestId('confirm-pass-1')).toHaveCount(0)
+
+    const { data: bAfter } = await supabase
+      .from('transactions').select('reconciled, statement_import_id').eq('id', txnB.id).single()
+    expect(bAfter!.reconciled).toBe(true)
+  })
+
+  test('Unmatched — Create new transaction prefills + saves with reconciled=true', async ({ page }) => {
+    const { prop, account } = await seedAccount()
+    // No candidate transactions seeded — stmt row will be unmatched.
+    await seedOpenPeriodWithImport(prop, account.id, [
+      { index: 0, date: '2026-04-15', amountP: 50000, description: 'Smoke create-new stmt row', reference: 'CREATE-001' },
+    ])
+
+    await openReviewModal(page, prop.id, account.id)
+    await expect(page.getByText('Unmatched rows')).toBeVisible()
+    await expect(page.getByTestId('unmatched-row-0')).toBeVisible()
+
+    await page.getByTestId('action-create-0').click()
+    // Sub-form opens prefilled with row description.
+    await expect(page.getByTestId('create-description')).toHaveValue(/Smoke create-new stmt row/)
+    await page.getByTestId('action-submit').click()
+
+    // Action form closes (UI signal before DB).
+    await expect(page.getByTestId('action-submit')).toHaveCount(0)
+
+    const { data: txns } = await supabase
+      .from('transactions').select('id, amount, reconciled, statement_import_id, description')
+      .eq('bank_account_id', account.id)
+    expect(txns).toHaveLength(1)
+    expect(txns![0].reconciled).toBe(true)
+    expect(txns![0].statement_import_id).not.toBeNull()
+    expect(Number(txns![0].amount)).toBe(500)
+  })
+
+  test('Unmatched — Match manually picker filters to unreconciled txns and links on select', async ({ page }) => {
+    const { prop, account } = await seedAccount()
+    // Seed a txn with mismatched amount/date so it doesn't auto-match anything.
+    const txn = await seedTransaction(prop, account.id, {
+      amountP: 75000, date: '2026-01-01', description: 'Smoke manual-pick candidate', reference: 'OFFCYCLE',
+    })
+    await seedOpenPeriodWithImport(prop, account.id, [
+      // Wildly different amount + far-from-date so no automatic pass matches.
+      { index: 0, date: '2026-04-15', amountP: 99999, description: 'Smoke manual-pick stmt row', reference: 'STMT-MAN' },
+    ])
+
+    await openReviewModal(page, prop.id, account.id)
+    await page.getByTestId('action-manual-0').click()
+
+    // Picker shows the seeded txn.
+    const picker = page.getByTestId('manual-pick-txn')
+    await expect(picker).toBeVisible()
+    await picker.selectOption(txn.id)
+    await page.getByTestId('action-submit').click()
+    await expect(page.getByTestId('action-submit')).toHaveCount(0)
+
+    const { data: reload } = await supabase
+      .from('transactions').select('reconciled, statement_import_id').eq('id', txn.id).single()
+    expect(reload!.reconciled).toBe(true)
+
+    const { data: audit } = await supabase
+      .from('reconciliation_audit_log').select('notes')
+      .eq('bank_account_id', account.id).eq('action', 'manual_match')
+    expect(audit!.some(a => a.notes!.includes('manual match of unmatched statement row'))).toBe(true)
+  })
+
+  test('Unmatched — Mark as suspense inserts suspense_items row + audit row', async ({ page }) => {
+    const { prop, account } = await seedAccount()
+    const { importId } = await seedOpenPeriodWithImport(prop, account.id, [
+      { index: 0, date: '2026-04-15', amountP: 88800, description: 'Smoke suspense stmt row' },
+    ])
+
+    await openReviewModal(page, prop.id, account.id)
+    await page.getByTestId('action-suspense-0').click()
+    await page.getByTestId('suspense-reason').fill('Unidentified incoming transfer — investigating with the bank')
+    await page.getByTestId('suspense-target-date').fill('2026-05-15')
+    await page.getByTestId('action-submit').click()
+    await expect(page.getByTestId('action-submit')).toHaveCount(0)
+
+    const { data: si } = await supabase
+      .from('suspense_items').select('amount, description, status, target_resolution_date, resolution_notes')
+      .eq('bank_statement_import_id', importId)
+    expect(si).toHaveLength(1)
+    expect(si![0].status).toBe('open')
+    expect(Number(si![0].amount)).toBe(888)
+    expect(si![0].target_resolution_date).toBe('2026-05-15')
+
+    const { data: audit } = await supabase
+      .from('reconciliation_audit_log').select('notes')
+      .eq('bank_account_id', account.id).eq('action', 'suspense')
+    expect(audit).toHaveLength(1)
+    expect(audit![0].notes).toContain('RICS Rule 3.7')
+    expect(audit![0].notes).toContain('investigating with the bank')
+  })
+
+  test('Unmatched — Reject statement row writes audit row citing RICS Rule 3.7', async ({ page }) => {
+    const { prop, account } = await seedAccount()
+    await seedOpenPeriodWithImport(prop, account.id, [
+      { index: 0, date: '2026-04-15', amountP: 12345, description: 'Smoke reject stmt row' },
+    ])
+
+    await openReviewModal(page, prop.id, account.id)
+    await page.getByTestId('action-reject-0').click()
+    await page.getByTestId('reject-reason').fill('Duplicate of an earlier statement row')
+    await page.getByTestId('action-submit').click()
+    await expect(page.getByTestId('action-submit')).toHaveCount(0)
+
+    const { data: audit } = await supabase
+      .from('reconciliation_audit_log').select('notes, action')
+      .eq('bank_account_id', account.id).eq('action', 'reject')
+    expect(audit).toHaveLength(1)
+    expect(audit![0].notes).toContain('RICS Rule 3.7')
+    expect(audit![0].notes).toContain('Duplicate of an earlier statement row')
+
+    // No transactions row should be created on reject.
+    const { data: txns } = await supabase
+      .from('transactions').select('id').eq('bank_account_id', account.id)
+    expect(txns ?? []).toHaveLength(0)
   })
 })

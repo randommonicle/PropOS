@@ -45,6 +45,7 @@ import { Upload, Play, AlertTriangle, X, CheckCircle2, Clock } from 'lucide-reac
 import { formatDate, todayISODate } from '@/lib/utils'
 import { formatPounds } from '@/lib/money'
 import { StatementImportModal } from './StatementImportModal'
+import { ReconciliationReviewModal } from './ReconciliationReviewModal'
 import type { Database } from '@/types/database'
 
 type BankAccount             = Database['public']['Tables']['bank_accounts']['Row']
@@ -73,8 +74,10 @@ export function ReconciliationTab({
   const [error,    setError]    = useState<string | null>(null)
 
   /** When set: the account whose Start / Continue reconciliation button was
-   *  clicked. Drives the StatementImportModal. */
-  const [importingAccount, setImportingAccount] = useState<BankAccount | null>(null)
+   *  clicked. The active modal is dispatched by state — if the account's open
+   *  period already has a linked bank_statement_import, we open the review
+   *  modal; otherwise the import modal. */
+  const [activeAccountId, setActiveAccountId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     const { data: accountsData, error: accErr } = await supabase
@@ -150,40 +153,50 @@ export function ReconciliationTab({
             <AccountReconciliationCard
               key={state.account.id}
               state={state}
-              onStart={() => setImportingAccount(state.account)}
+              onStart={() => setActiveAccountId(state.account.id)}
             />
           ))}
         </div>
       )}
 
-      {importingAccount && (
-        <StatementImportModal
-          firmId={firmId}
-          account={importingAccount}
-          openPeriod={
-            accountStates
-              .find(s => s.account.id === importingAccount.id)?.openPeriod ?? null
+      {activeAccountId && (() => {
+        const state = accountStates.find(s => s.account.id === activeAccountId)
+        if (!state) return null
+        // Dispatch by state: if openPeriod has an import already, route to
+        // the review modal (1h.2). Otherwise the import modal (1h.1).
+        if (state.openPeriod && state.openPeriodImport) {
+          return (
+            <ReconciliationReviewModal
+              firmId={firmId}
+              account={state.account}
+              period={state.openPeriod}
+              importRow={state.openPeriodImport}
+              onClose={() => { setActiveAccountId(null); load() }}
+            />
+          )
+        }
+        const acc = state.account
+        const defaultPeriodStart = (() => {
+          const last = acc.last_reconciled_at
+          if (last) {
+            const d = new Date(last)
+            d.setUTCDate(d.getUTCDate() + 1)
+            return d.toISOString().slice(0, 10)
           }
-          openPeriodImport={
-            accountStates
-              .find(s => s.account.id === importingAccount.id)?.openPeriodImport ?? null
-          }
-          defaultPeriodStart={
-            (() => {
-              const acc = importingAccount
-              const last = acc.last_reconciled_at
-              if (last) {
-                const d = new Date(last)
-                d.setUTCDate(d.getUTCDate() + 1)
-                return d.toISOString().slice(0, 10)
-              }
-              return acc.opened_date ?? todayISODate()
-            })()
-          }
-          onClose={() => setImportingAccount(null)}
-          onSaved={() => { setImportingAccount(null); load() }}
-        />
-      )}
+          return acc.opened_date ?? todayISODate()
+        })()
+        return (
+          <StatementImportModal
+            firmId={firmId}
+            account={acc}
+            openPeriod={state.openPeriod}
+            openPeriodImport={state.openPeriodImport}
+            defaultPeriodStart={defaultPeriodStart}
+            onClose={() => setActiveAccountId(null)}
+            onSaved={() => { setActiveAccountId(null); load() }}
+          />
+        )
+      })()}
     </section>
   )
 }

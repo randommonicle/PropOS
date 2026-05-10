@@ -599,6 +599,48 @@ The "auto-protect on detection" pattern: items 5, 6, 7 are passive (they reject 
 
 ---
 
+## 2026-05-10 — Reconciliation 1h.2: three-pass matching engine + review UI
+
+**Context:** 1h.1 left periods open with statements uploaded in `bank_statement_imports.status='processing'`. 1h.2 implements the three-pass matching algorithm (spec §5.3 Matching Algorithm), the review modal that consumes the matching output, and the four PM actions on unmatched rows (Create new transaction / Match manually / Mark as suspense / Reject). Every action writes an audit-log row citing RICS Rule 3.7 — statutory citation doubling as test anchor (LESSONS Phase 3 session 2 pattern).
+
+**Decision:**
+
+1. **Pure-functional matching engine in `app/src/lib/reconciliation/matchingEngine.ts`.** `runMatching(rows, transactions)` returns `{ matches, unmatchedRowIndices, unmatchedTransactionIds }`. No DB I/O. The pass predicates are local helpers (`matchesPass1` / `matchesPass2` / `matchesPass3`); the dedup invariant is enforced by `Set` candidate pools that shrink per pass. Deterministic ordering (date asc, then amount desc, then index/id) means smoke 8's pass-1-then-pass-2 dedup test is stable across runs regardless of DB row ordering.
+2. **Pass predicates lock to spec verbatim.**
+   - Pass 1: `txn.amount === stmt.amountP` to the penny + `|days(txn, stmt)| <= 2` + `(stmt.reference contains txn.reference OR stmt.payee == txn.payee)`. Confidence 1.00. Auto-applies on modal open.
+   - Pass 2: amount-to-penny + `|days| <= 7`. No ref/payee constraint. Confidence 0.80. PM Confirm.
+   - Pass 3 (two disjunctive subclauses): amount-to-penny + `|days| <= 30`, OR `|stmt - txn| <= 50p` + `|days| <= 7`. Confidence 0.50. PM Confirm. The two subclauses get separate smoke coverage (smokes 7 + 7b) so a future refactor cannot quietly tighten the £0.50 tolerance branch without breaking a test.
+3. **Auto-match-on-open with idempotent re-entry.** When `ReconciliationReviewModal` opens for a `processing` import, it loads unreconciled txns on the bank account, runs matching, applies pass-1 matches to the DB (`transactions.reconciled=true` + `statement_import_id` + `reconciled_at` + `reconciled_by`), writes audit-log rows with `action='auto_match'`, persists the per-row state into `bank_statement_imports.raw_data`, and updates `matched_count` / `unmatched_count` / `status='matched'`. Re-opening the modal is safe — already-matched rows are filtered out of the candidate pool on re-run (idempotent property the design depends on).
+4. **Per-row state lives on `raw_data`.** Each parsed row gains optional fields after matching: `matchStatus` (`'matched' | 'suspense' | 'rejected'`), `matchedTransactionId`, `matchPass`, `matchConfidence`, `suspenseItemId`, `rejectionReason`. Every PM action rewrites the whole `raw_data` JSONB with the per-row patch — simpler than per-element JSONB UPDATEs and makes the modal source-of-truth easy to reason about. The corresponding `transactions.reconciled` flag and `suspense_items` row are the system-of-record; `raw_data` is the audit trail of what the PM saw on screen.
+5. **`auditLog.recordAction()` helper.** Wraps the INSERT to `reconciliation_audit_log`. Throws on error rather than silently swallowing — spec §5.3 RICS RULE: "the reconciliation engine ... is the system component that demonstrates compliance, so its audit log is itself a compliance artefact." Every action's `notes` field starts with the literal string `RICS Rule 3.7 evidence trail —`. PROD-GATE flag points at server-side actor stamping.
+6. **Tab dispatch updated.** `ReconciliationTab` now branches on `(openPeriod, openPeriodImport)` state: no period or no import → `StatementImportModal`; period with import → `ReconciliationReviewModal`. The "Continue reconciliation" button on each account row routes to the correct modal automatically.
+7. **Unmatched-row sub-flows.** Each unmatched row exposes four buttons (Create new / Match manually / Suspense / Reject) which open an inline `ActionForm` card under the unmatched list (rather than nested modals — keeps the surface coherent and avoids strict-mode locator collisions on multiple modal headings). Each sub-flow:
+   - **Create new** prefills the new transactions row from stmt (`amount`, `date`, `description`, `payee`, `reference`); sign convention picks `transaction_type` (positive = receipt, negative = payment); inserts with `reconciled=true` so the new row participates in subsequent reconciliation summing immediately.
+   - **Match manually** picker offers all unreconciled transactions on this `bank_account_id` (no period filter — more flexible for the off-cycle catch-up case where a PM is reconciling rows the algorithm couldn't reach).
+   - **Suspense** requires a non-empty reason and inserts a `suspense_items` row with `target_resolution_date` (defaulted to today; PM can override).
+   - **Reject** requires a non-empty reason; no transaction created; row is flagged in `raw_data`. Audit-log row's notes include the reason verbatim so the rejection rationale is preserved.
+8. **Out of scope (deliberate, FORWARD anchors planted).**
+   - Completion + £0.01 balance gate + `last_reconciled_at` write — 1h.3.
+   - Suspense-item resolution UI — `FORWARD: PROD-GATE` flag in `ReconciliationTab.tsx`; covered by Production-grade gate item 9.
+   - Edge Function lift of matching algorithm — `FORWARD: PROD-GATE` in `matchingEngine.ts` header; covered by Production-grade gate item 1.
+   - Atomic transactional wrap of "flip txn.reconciled + write audit row" — non-atomic at PoC; recoverable on refresh because pass-1 matching is idempotent. Covered by item 7 of the Production-grade gate.
+   - Server-stamped `actor_id` on audit-log rows — `FORWARD: PROD-GATE` in `auditLog.ts`. Covered by item 6.
+
+**Smokes (9 added).** Active count: 93 → 102.
+- `Pass-1 exact match auto-matches with confidence 1.00 + audit row` — verifies the auto-apply path, the `confidence 1.00` substring in audit notes, and the `bank_statement_imports.status='matched'` transition with correct counts.
+- `Pass-2 strong match Suggested 80% — Confirm + audit row` — clicks the per-row Confirm button, asserts modal-state-change before DB query (modal-vs-DB-query race pattern from LESSONS Phase 3 session 2), verifies `confidence 0.80` substring.
+- `Pass-3 weak match (amount-to-penny + ±30 days subclause)` — covers Pass-3 subclause A.
+- `Pass-3 weak match (£0.50 tolerance + ±7 days subclause — foreign card rounding)` — **smoke 7b** locks the disjunctive subclause B path so a future refactor can't silently tighten the rounding tolerance.
+- `Dedup — pass-1 match removes its txn from pass-2 candidate pool` — two-txn-two-row scenario; verifies the candidate pool invariant.
+- `Unmatched — Create new transaction prefills + saves with reconciled=true` — verifies the new row carries `reconciled=true` and `statement_import_id` set.
+- `Unmatched — Match manually picker filters to unreconciled txns` — picker visible, selects a txn that wouldn't have matched algorithmically (off-cycle date + different amount).
+- `Unmatched — Mark as suspense inserts suspense_items row` — verifies `status='open'`, `target_resolution_date`, `resolution_notes` capture.
+- `Unmatched — Reject writes audit row citing RICS Rule 3.7` — string assertion against the audit notes; no transactions row created.
+
+**Rationale:** Pure-functional matching keeps the engine trivially testable and the smoke surface deterministic. The dedup invariant via `Set` pools is the simplest correct shape; alternatives (graph matching, optimal assignment) would be over-engineered for a per-period pool of ~50–200 rows. Splitting the disjunctive Pass-3 rule into two smokes is cheap insurance against the kind of regression the LESSONS Phase 3 entry calls out — the £0.50 tolerance branch is a foreign-card-rounding edge case that's easy to break under refactor and hard to spot by eye. The action-form-as-inline-card approach (vs nested modals) avoids strict-mode locator collisions across multiple modal headings — the LESSONS pattern that bit the 1f / 1g smokes the first time. The PROD-GATE flags planted in `matchingEngine.ts`, `auditLog.ts`, and `ReconciliationTab.tsx` extend the Production-grade gate manifest from items 1, 6, 9 of the canonical list.
+
+---
+
 ## 2026-05-07 — pgAudit enablement approach
 
 **Context:** Section 4 requires pgAudit to be enabled before any data migration. The Supabase hosted project does not allow direct superuser SQL for extension creation on the free tier in some cases.

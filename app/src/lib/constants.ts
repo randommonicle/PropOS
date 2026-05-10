@@ -146,6 +146,33 @@ export const CRITICAL_ACTION_TYPES = [
 ] as const
 export type CriticalActionType = (typeof CRITICAL_ACTION_TYPES)[number]
 
+/**
+ * Reconciliation matching pass labels — spec §5.3 Matching Algorithm.
+ * Confidence values are spec-mandated. Labels are user-facing.
+ */
+export const RECONCILIATION_PASS_LABELS = {
+  1: { label: 'Auto-matched',       confidence: 1.00 },
+  2: { label: 'Suggested match',    confidence: 0.80 },
+  3: { label: 'Review carefully',   confidence: 0.50 },
+} as const
+export type ReconciliationPass = keyof typeof RECONCILIATION_PASS_LABELS
+
+/**
+ * Reconciliation audit-log action vocabulary — must match the CHECK
+ * constraint on reconciliation_audit_log.action (00025).
+ * RICS Rule 3.7 evidence trail; every PM action on the review screen
+ * writes one of these.
+ */
+export const RECONCILIATION_AUDIT_ACTIONS = [
+  'auto_match',
+  'manual_match',
+  'suspense',
+  'reject',
+  'completion',
+  'suspense_resolve',
+] as const
+export type ReconciliationAuditAction = (typeof RECONCILIATION_AUDIT_ACTIONS)[number]
+
 // Section 20 consultation statuses (state machine)
 export const SECTION_20_STATUSES = [
   'stage1_pending',
