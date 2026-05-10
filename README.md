@@ -2,7 +2,7 @@
 
 Full-stack property management operating system for RICS-regulated managing agents, SME agents, and RMC/RTM self-managed blocks.
 
-**Status:** Phase 3 (Financial) in progress — bank accounts, service charge accounts, and demands shipped (1a–1d). Transactions and reconciliation engine next.
+**Status:** Phase 3 (Financial) in progress — financial entities (bank accounts, service charge accounts, demands, transactions) and the dual-auth flow (payment authorisations + bank-account closure) all shipped (1a–1g). Bank reconciliation and statement import next.
 
 ---
 
@@ -68,7 +68,7 @@ PropOS/
 
 ## Database
 
-**21 migrations** (00001–00021) covering all 26 tables + trade_categories, RLS policies, dispatch engine, storage security, infrastructure hardening. Apply new migrations via the Supabase CLI:
+**23 migrations** (00001–00023) covering all 26 tables + trade_categories, RLS policies, dispatch engine, storage security, infrastructure hardening, payment_authorisations extensions for the dual-auth flow. Apply new migrations via the Supabase CLI:
 
 ```bash
 SUPABASE_ACCESS_TOKEN=<token> npx supabase link --project-ref <ref>
@@ -117,11 +117,11 @@ npm run test:smoke:report    # open last HTML report
 
 The dev server must be running (`npm run dev`) or Playwright will start it automatically.
 
-**Current coverage (Phases 1, 2, and Phase 3 commits 1a–1d):**
+**Current coverage (Phases 1, 2, and Phase 3 commits 1a–1g):**
 
 | Spec | Tests |
 |------|-------|
-| auth.setup | Login flow, JWT hook, dashboard redirect |
+| auth.setup + auth-pm.setup | Login flow as admin and as PM, JWT hook, dashboard redirect |
 | dashboard | Firm name, stat cards, no 401s, sidebar nav |
 | properties | List loads, seed data, create property round-trip |
 | documents | Page load, upload button, type filter |
@@ -132,8 +132,10 @@ The dev server must be running (`npm run dev`) or Playwright will start it autom
 | financial-bank-accounts | Bank accounts CRUD, MoneyInput round-trip, last-4 validation, mark-as-closed, regulatory delete guard |
 | financial-service-charge-accounts | SCA CRUD, status state machine, finalised lock, draft-only delete, FK-blocked delete |
 | financial-demands | Demands CRUD, leaseholder picker filtering, LTA s.21B guard (status + issued_date), state machine, paid lock, draft-only delete, regulatory delete guard |
+| financial-transactions | Transactions CRUD, sign-aware MoneyInput, balance trigger, demand auto-status, reconciled / statement-import locks, draft delete |
+| financial-payment-authorisations | Dual-auth request flow, self-auth guard, cross-user authorise / reject / cancel, immutability, closure dual-auth (PM-driven UI + admin authorise) |
 
-**Total: 62 tests passing.** Both Node.js and Python runners are active. Run both before declaring any change complete.
+**Total: 85 tests passing.** Node.js Playwright is the primary runner; Python (pytest + Playwright) is installed and ready for DB-integrity tests as a parallel runner.
 
 
 ---
@@ -156,7 +158,7 @@ Full decision log: [`docs/DECISIONS.md`](docs/DECISIONS.md)
 |-------|--------|-------------|
 | 1 — Foundation | ✅ Complete | Schema, auth, CRUD, document vault, dashboard |
 | 2 — Compliance & Works | ✅ Complete | Compliance tracker (RAG), insurance tracker, contractor register + managed trade categories, works orders, dispatch engine (token + email), contractor response page, Section 20 full lifecycle, UX polish |
-| 3 — Financial | In progress | ✓ Bank accounts, ✓ Service charge accounts, ✓ Demands. Transactions, reconciliation, statement import next. |
+| 3 — Financial | In progress | ✓ Bank accounts, ✓ Service charge accounts, ✓ Demands, ✓ Transactions, ✓ Payment authorisations (dual-auth), ✓ Bank account closure dual-auth. Bank reconciliation and statement import next. |
 | 4 — Portals | Planned | Leaseholder portal, maintenance requests |
 | 5 — BSA Module | Planned | Golden Thread, mandatory occurrences, HRB register |
 | 6 — Reporting | Planned | PDF reports, AGM packs, Section 20B schedules |
