@@ -6,7 +6,10 @@
  * elevated under that scope).
  *
  * What's covered here (Tier-1, 12 smokes):
- *   1.  C-1 — PM cannot UPDATE users.role on own row (column-grant rejection).
+ *   1.  C-1 — PM cannot self-grant admin via user_roles INSERT (RLS
+ *       rejection). Replaces the original column-grant smoke which gated on
+ *       users.role; that column was dropped in 1i.3 / 00029 in favour of the
+ *       user_roles junction. C-1 invariant preserved across the change.
  *   2.  C-1 — PM cannot UPDATE users.firm_id on own row.
  *   3.  C-1 positive — PM CAN UPDATE permitted columns (full_name) on own row.
  *   4.  C-2 — PM cannot transfer bank_accounts to a foreign firm via firm_id
@@ -174,17 +177,33 @@ test.describe('Security RLS — Tier-1 hardening (commit 1i.1)', () => {
 
   // ── C-1 — users column-grant restriction ──────────────────────────────────
 
-  test('C-1 — PM cannot UPDATE users.role on own row', async () => {
+  test('C-1 — PM cannot self-grant admin via user_roles INSERT', async () => {
+    // 1i.3 / 00029 dropped users.role in favour of the user_roles junction.
+    // The original C-1 attack vector ("PM UPDATEs users.role to escalate") is
+    // structurally gone — the column doesn't exist. The post-1i.3 vector is
+    // "PM INSERTs (user_id=self, role='admin') into user_roles". The
+    // user_roles_admin_all policy (00029) gates ALL writes on auth_has_role
+    // ('admin'), so this INSERT is rejected by RLS for any non-admin
+    // principal. C-1 invariant preserved across the architectural change.
+    //
+    // user_roles isn't in the generated types yet — cast through any.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sb = supabase as any
     const ctx = await signInAsPm()
-    const { error } = await supabase.from('users')
-      .update({ role: 'admin' }).eq('id', ctx.userId)
+    const { error } = await sb.from('user_roles')
+      .insert({ user_id: ctx.userId, role: 'admin' })
     expect(error).not.toBeNull()
-    // Column-level GRANT failure surfaces as 42501 "permission denied for column role".
+    // RLS rejection surfaces as 42501 "new row violates row-level security policy".
     expect(error?.code).toBe('42501')
 
-    // Verify role unchanged.
-    const { data: row } = await supabase.from('users').select('role').eq('id', ctx.userId).single()
-    expect(row?.role).toBe('property_manager')
+    // Verify the junction row was NOT created. The PM should still hold only
+    // their original property_manager role.
+    const { data: held } = await sb.from('user_roles')
+      .select('role')
+      .eq('user_id', ctx.userId)
+    const roles = ((held ?? []) as Array<{ role: string }>).map(r => r.role)
+    expect(roles).toContain('property_manager')
+    expect(roles).not.toContain('admin')
   })
 
   test('C-1 — PM cannot UPDATE users.firm_id on own row', async () => {

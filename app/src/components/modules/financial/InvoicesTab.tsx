@@ -66,7 +66,7 @@ import { formatDate, slugToTitle, todayISODate } from '@/lib/utils'
 import { poundsToP, pToPounds, formatPounds } from '@/lib/money'
 import {
   AI_CONFIDENCE_REVIEW_THRESHOLD, INVOICE_STATUSES,
-  STORAGE_BUCKETS, isFinanceRole, type InvoiceStatus, type UserRole,
+  STORAGE_BUCKETS, hasAdminRole, hasPmRole, type InvoiceStatus, type UserRole,
 } from '@/lib/constants'
 import {
   isInvoiceTerminal, statusOptionsForRole,
@@ -103,8 +103,12 @@ export function InvoicesTab({
   propertyId: string
 }) {
   const userId = useAuthStore(s => s.user?.id ?? null)
-  const role   = useAuthStore(s => s.firmContext?.role ?? null)
-  const canFinance = isFinanceRole(role)
+  const roles = useAuthStore(s => s.firmContext?.roles ?? null)
+  // Legacy singular role still read for the InvoiceDrawer subcomponent and
+  // statusTransitions helpers — they keep the singular signature through
+  // 1i.3 phase 2; refactor to roles[] lands in phase 3.
+  const role = useAuthStore(s => s.firmContext?.role ?? null)
+  const canFinance = hasAdminRole(roles)
 
   const [invoices, setInvoices] = useState<Invoice[]>([])
   const [accounts, setAccounts] = useState<BankAccount[]>([])
@@ -225,7 +229,7 @@ export function InvoicesTab({
     return <div className="text-sm text-muted-foreground">Loading invoices…</div>
   }
 
-  const showRoleHint = !canFinance && role === 'property_manager'
+  const showRoleHint = !canFinance && hasPmRole(roles)
 
   return (
     <section aria-label="Invoices">
@@ -279,6 +283,7 @@ export function InvoicesTab({
           accounts={accounts}
           initial={editing}
           role={role}
+          roles={roles}
           userId={userId}
           onSaved={async () => { setShowForm(false); setEditing(null); await load() }}
           onCancel={() => { setShowForm(false); setEditing(null) }}
@@ -418,13 +423,17 @@ function ConfidencePill({
 // Invoice form (create + edit drawer)
 // ════════════════════════════════════════════════════════════════════════════
 function InvoiceForm({
-  firmId, propertyId, accounts, initial, role, userId, onSaved, onCancel,
+  firmId, propertyId, accounts, initial, role, roles, userId, onSaved, onCancel,
 }: {
   firmId: string
   propertyId: string
   accounts: BankAccount[]
   initial: Invoice | null
+  /** Legacy singular role — passed through to statusTransitions helpers
+   *  (kept on the singular signature through 1i.3 phase 2). */
   role: UserRole | null
+  /** Multi-role array — used by hasAdminRole for the queue-for-payment gate. */
+  roles: UserRole[] | null
   userId: string | null
   onSaved: () => void | Promise<void>
   onCancel: () => void
@@ -559,12 +568,12 @@ function InvoiceForm({
   }
 
   // Finance action: queue an approved invoice for payment. Inserts a payment_
-  // authorisations row with action_type='payment' + proposed.invoice_id; the
-  // invoice flips to 'queued' atomically (two writes, recoverable).
+  // authorisations row with action_type='payment_release' + proposed.invoice_id;
+  // the invoice flips to 'queued' atomically (two writes, recoverable).
   async function handleQueueForPayment() {
     if (!initial || !userId) return
     setActionErr(null)
-    if (!isFinanceRole(role)) {
+    if (!hasAdminRole(roles)) {
       setActionErr(
         'Queue-for-payment is restricted to admin staff. RICS Client money handling — segregation of duties.',
       )
@@ -604,7 +613,7 @@ function InvoiceForm({
       firm_id:      firmId,
       requested_by: userId,
       status:       'pending',
-      action_type:  'payment',
+      action_type:  'payment_release',
       proposed:     proposed as unknown as Database['public']['Tables']['payment_authorisations']['Insert']['proposed'],
     })
     if (paErr) { setActionErr(paErr.message); return }
@@ -765,7 +774,7 @@ function InvoiceForm({
             )}
 
             {/* Finance Queue-for-payment (approved → queued). */}
-            {status === 'approved' && isFinanceRole(role) && (
+            {status === 'approved' && hasAdminRole(roles) && (
               <>
                 <div className="space-y-1">
                   <label htmlFor="queue-account" className="text-sm font-medium">

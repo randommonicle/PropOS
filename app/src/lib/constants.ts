@@ -53,10 +53,17 @@ export const INVOICE_STATUSES = [
 ] as const
 export type InvoiceStatus = (typeof INVOICE_STATUSES)[number]
 
-// User roles — matches the role column in the users table
+// User roles — matches the user_roles_role_chk constraint on the user_roles
+// junction table (00029). Single-column users.role was dropped in 1i.3.
+// Multi-role membership is now first-class: a partner who acts as both admin
+// and accounts staff holds two rows in user_roles and the JWT carries both.
 export const USER_ROLES = [
   'admin',
+  'accounts',          // staff finance — first-leg authorisation tier (1i.3)
+  'senior_pm',         // staff PM-tier with override authority (1i.3)
   'property_manager',
+  'auditor',           // staff read-only including audit-log tables (1i.3)
+  'inspector',         // staff scaffold — Phase 7 inspection app (1i.3)
   'director',
   'leaseholder',
   'contractor',
@@ -65,29 +72,63 @@ export const USER_ROLES = [
 export type UserRole = (typeof USER_ROLES)[number]
 
 /**
- * Roles authorised to perform regulated-finance actions: bank-account closure
- * authorisation, payment authorisation, invoice queue-for-payment, and the
- * RICS-designation toggle. RICS Client money handling (1st ed., Oct 2022
- * reissue) requires both signatories on a managing-agent client-account
- * withdrawal to be staff of the regulated firm. The `director` role represents
- * RMC directors / freeholder representatives — a CLIENT-side role with portal
- * access, not staff — and is therefore explicitly excluded.
+ * Typed role-membership helpers — every role gate consumes the user_roles[]
+ * array claim emitted by the JWT custom_access_token_hook (00029). The
+ * legacy `firmContext.role: UserRole` is still populated for the transition
+ * (priority-picked first role) so unswept call-sites keep working; new code
+ * should consume `firmContext.roles: UserRole[]` via these helpers.
  *
- * Regulatory anchor: RICS Client money handling §X.X (verify exact section
- * when wired into smoke audit-trail strings) + RICS Service Charge Residential
- * Management Code, 4th edition (effective 7 April 2026) + TPI Consumer Charter
- * & Standards Edition 3 (effective 1 January 2025).
+ * Semantics-preserving in 1i.3 phase 2: each helper gates on the same role
+ * its singular predecessor did. Role widening (admin → admin OR accounts on
+ * the queue-for-payment gate, etc.) lands in phase 3 with the function-split
+ * + tier-asymmetric flip-on.
+ */
+function has(role: UserRole, roles: readonly UserRole[] | null | undefined): boolean {
+  return roles != null && roles.includes(role)
+}
+function hasAny(needed: readonly UserRole[], roles: readonly UserRole[] | null | undefined): boolean {
+  return roles != null && roles.some(r => needed.includes(r))
+}
+
+export const hasAdminRole     = (roles: readonly UserRole[] | null | undefined) => has('admin', roles)
+export const hasAccountsRole  = (roles: readonly UserRole[] | null | undefined) => has('accounts', roles)
+export const hasSeniorPmRole  = (roles: readonly UserRole[] | null | undefined) => has('senior_pm', roles)
+export const hasPmRole        = (roles: readonly UserRole[] | null | undefined) => has('property_manager', roles)
+export const hasAuditorRole   = (roles: readonly UserRole[] | null | undefined) => has('auditor', roles)
+export const hasInspectorRole = (roles: readonly UserRole[] | null | undefined) => has('inspector', roles)
+export const hasDirectorRole  = (roles: readonly UserRole[] | null | undefined) => has('director', roles)
+
+/**
+ * Any staff PM-tier role (admin OR accounts OR senior_pm OR property_manager).
+ * Mirrors the post-1i.3 is_pm_or_admin() SQL helper — used for write paths
+ * across financial / properties / leaseholders / works tables in the UI.
+ */
+export const isStaffPmTier = (roles: readonly UserRole[] | null | undefined) =>
+  hasAny(['admin','accounts','senior_pm','property_manager'], roles)
+
+/**
+ * Any role authorised on a regulated-finance action (today: admin only —
+ * semantics preserved through 1i.3 phase 2). Phase 3 introduces the
+ * tier-asymmetric flip-on: queue-for-payment requires accounts OR admin;
+ * authorise-payment requires admin (with self-auth guard); payee-setup
+ * authoriser ≠ release authoriser. Until phase 3 lands, this remains the
+ * admin-only gate from 1i.2.
  *
- * Role-tier asymmetry (e.g. accounts-initiates / partner-releases) is good
- * practice, not a regulatory mandate. The binding rule is "two distinct
- * people; segregation of payee-setup vs payment-release functions". Tier
- * asymmetry + a dedicated `accounts` role land in 1i.3 alongside multi-role
- * membership.
+ * RICS Client money handling (1st ed., Oct 2022 reissue) — both signatories
+ * on a managing-agent client-account withdrawal must be staff of the
+ * regulated firm. `director` is client-side (RMC directors / freeholder
+ * representatives) and explicitly excluded.
+ */
+export const hasAnyFinanceRole = (roles: readonly UserRole[] | null | undefined) =>
+  hasAdminRole(roles)
+
+/**
+ * Legacy single-role finance gate. Kept as a thin shim over the new array
+ * helper for one transitional commit so unswept call-sites keep working;
+ * removed in the cleanup commit alongside the legacy `user_role` JWT claim
+ * (FORWARD: PROD-GATE — see 00029 step 4).
  *
- * FORWARD: PROD-GATE — when 1i.3 lands, FINANCE_ROLES expands to a function
- * (or splits into hasAccountsRole / hasAdminRole helpers consuming the
- * user_roles[] JWT claim) and the role-tier-asymmetric dual-auth gate
- * activates in PaymentAuthorisationsTab + InvoicesTab queue handler.
+ * @deprecated since 1i.3 phase 2 — use `hasAdminRole(firmContext.roles)`.
  */
 export const FINANCE_ROLES = ['admin'] as const satisfies readonly UserRole[]
 export function isFinanceRole(role: UserRole | null | undefined): boolean {
@@ -166,15 +207,30 @@ export type PaymentAuthStatus = (typeof PAYMENT_AUTH_STATUSES)[number]
 
 /**
  * Critical action types — discriminator on payment_authorisations.action_type.
- * 'payment'                  — original 1f flow; uses transaction_id + proposed (ProposedTransaction).
- * 'close_bank_account'       — 1g flow; uses proposed (ProposedClosure); on authorise the
- *                              application updates bank_accounts.is_active=false + closed_date.
- * 'toggle_rics_designation'  — 1g.5 flow; uses proposed (ProposedRicsDesignationToggle); on
- *                              authorise the application updates bank_accounts.rics_designated.
- *                              Direction-gated: only true→false is gated; false→true is direct.
+ * Matches the CHECK constraint set by 00029 (renamed `payment` →
+ * `payment_release`, added `payment_payee_setup` for the RICS function-split).
+ *
+ * 'payment_release'          — money-out auth (was `payment` pre-1i.3); uses
+ *                              transaction_id + proposed (ProposedTransaction).
+ * 'payment_payee_setup'      — 1i.3 flow; establishes / changes a contractor's
+ *                              bank details. Authorise stamps contractor
+ *                              .approved_by + .approved_at. The same admin
+ *                              cannot then authorise a payment_release to
+ *                              that contractor (RICS Client money handling —
+ *                              segregation of duties; payee-setter ≠
+ *                              release-authoriser). UI surface for inserting
+ *                              this PA lands in 1i.3 phase 3.
+ * 'close_bank_account'       — 1g flow; uses proposed (ProposedClosure); on
+ *                              authorise the application updates
+ *                              bank_accounts.is_active=false + closed_date.
+ * 'toggle_rics_designation'  — 1g.5 flow; uses proposed (ProposedRicsDesignationToggle);
+ *                              on authorise the application updates
+ *                              bank_accounts.rics_designated. Direction-gated:
+ *                              only true→false is gated; false→true is direct.
  */
 export const CRITICAL_ACTION_TYPES = [
-  'payment',
+  'payment_release',
+  'payment_payee_setup',
   'close_bank_account',
   'toggle_rics_designation',
 ] as const

@@ -45,7 +45,7 @@ import { Button, Badge, Input } from '@/components/ui'
 import { CheckCircle2, XCircle, X, AlertTriangle, Clock, Lock } from 'lucide-react'
 import { cn, formatDateTime, slugToTitle } from '@/lib/utils'
 import { formatPounds, poundsToP } from '@/lib/money'
-import { isFinanceRole, type PaymentAuthStatus, type CriticalActionType } from '@/lib/constants'
+import { hasAdminRole, hasPmRole, type PaymentAuthStatus, type CriticalActionType } from '@/lib/constants'
 import type {
   Database, ProposedTransaction, ProposedClosure,
   ProposedRicsDesignationToggle, ProposedAction,
@@ -80,8 +80,8 @@ export function PaymentAuthorisationsTab({
   propertyId: string
 }) {
   const userId = useAuthStore(s => s.user?.id ?? null)
-  const role   = useAuthStore(s => s.firmContext?.role ?? null)
-  const canAuthorise = isFinanceRole(role)
+  const roles = useAuthStore(s => s.firmContext?.roles ?? null)
+  const canAuthorise = hasAdminRole(roles)
 
   const [auths,    setAuths]    = useState<PaymentAuth[]>([])
   const [accounts, setAccounts] = useState<BankAccount[]>([])
@@ -148,8 +148,8 @@ export function PaymentAuthorisationsTab({
     if (pa.status !== 'pending') { setActionErr('Only pending requests can be authorised.'); return }
     if (!pa.proposed) { setActionErr('Authorisation has no proposed snapshot.'); return }
 
-    const actionType = (pa.action_type as CriticalActionType) ?? 'payment'
-    if (actionType === 'payment') {
+    const actionType = (pa.action_type as CriticalActionType) ?? 'payment_release'
+    if (actionType === 'payment_release') {
       await authorisePayment(pa, pa.proposed as ProposedTransaction)
     } else if (actionType === 'close_bank_account') {
       await authoriseClosure(pa, pa.proposed as ProposedClosure)
@@ -332,7 +332,7 @@ export function PaymentAuthorisationsTab({
     // stranded in `queued` with no path forward.
     const proposedInvoiceId =
       (pa.proposed as ProposedTransaction | null)?.invoice_id ?? null
-    if (proposedInvoiceId && pa.action_type === 'payment') {
+    if (proposedInvoiceId && pa.action_type === 'payment_release') {
       await supabase
         .from('invoices')
         .update({ status: 'approved' })
@@ -354,7 +354,7 @@ export function PaymentAuthorisationsTab({
         <h2 className="font-semibold">
           Payment authorisations ({auths.length})
         </h2>
-        {!canAuthorise && role === 'property_manager' && (
+        {!canAuthorise && hasPmRole(roles) && (
           <span className="text-xs text-muted-foreground flex items-center gap-1">
             <Lock className="h-3 w-3" />
             Authorisation actions are restricted to admin and director roles.
@@ -439,7 +439,7 @@ function PaymentAuthRow({
   onCancelReject: () => void
 }) {
   const status = pa.status as PaymentAuthStatus
-  const actionType = (pa.action_type as CriticalActionType) ?? 'payment'
+  const actionType = (pa.action_type as CriticalActionType) ?? 'payment_release'
   const proposed = pa.proposed
   const accountId = proposed?.bank_account_id ?? null
   const accountName = accountId ? (accountMap.get(accountId) ?? '—') : '—'
