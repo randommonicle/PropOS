@@ -22,13 +22,23 @@
 import { useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useAuthStore } from '@/stores/authStore'
-import type { UserRole } from '@/lib/constants'
+import { USER_ROLES, type UserRole } from '@/lib/constants'
 import type { Session } from '@supabase/supabase-js'
 
 interface AccessTokenClaims {
   firm_id?: string
+  /** Multi-role array claim — emitted by 00029 custom_access_token_hook. */
+  user_roles?: string[]
+  /**
+   * Legacy single-role claim — still emitted by 00029 (priority-picked
+   * first role from `user_roles`) for one transitional commit. Removed in
+   * the cleanup commit alongside the array-claim-only switch. FORWARD:
+   * PROD-GATE — see 00029 step 4.
+   */
   user_role?: string
 }
+
+const KNOWN_ROLES = new Set<string>(USER_ROLES)
 
 // Decode the access-token JWT payload. JWTs are base64url-encoded; the standard
 // atob() handles the base64 portion after URL-decoding (- → +, _ → /, padding).
@@ -82,13 +92,24 @@ export function useAuth() {
   async function loadFirmContext(session: Session) {
     const claims = decodeAccessTokenClaims(session)
     const firmId = claims.firm_id ?? null
-    const role = claims.user_role ?? null
+
+    // Prefer the new array claim. Fall back to wrapping the legacy single
+    // claim if a stale token from before 00029 is presented (e.g. session
+    // captured pre-migration whose 600s window hasn't expired yet). Filter
+    // to known role values so a forged claim with an unknown string can't
+    // surface in firmContext.roles.
+    const claimedRoles: string[] = Array.isArray(claims.user_roles)
+      ? claims.user_roles
+      : claims.user_role
+        ? [claims.user_role]
+        : []
+    const roles = claimedRoles.filter((r): r is UserRole => KNOWN_ROLES.has(r))
 
     // No claims → user is authenticated but unprovisioned (no public.users row,
     // or active=false). firmContext stays null; AuthGuard blocks render. The
     // user-visible "Your account is not yet provisioned" banner is FORWARD —
     // see AuthGuard.tsx FORWARD note.
-    if (!firmId || !role) {
+    if (!firmId || roles.length === 0) {
       setFirmContext(null)
       setLoading(false)
       return
@@ -103,7 +124,12 @@ export function useAuth() {
     setFirmContext({
       firmId,
       firmName: firmData?.name ?? '',
-      role: role as UserRole,
+      roles,
+      // Legacy singular — first element of the priority-ordered array (the
+      // hook ranks admin > senior_pm > accounts > pm > others). Keeps every
+      // unswept `firmContext.role` consumer working through the 1i.3
+      // transition; removed alongside the legacy `user_role` JWT claim.
+      role: roles[0],
     })
     setLoading(false)
   }

@@ -341,7 +341,7 @@ test.describe('Property detail — invoices tab', () => {
       firm_id:      prop.firm_id,
       requested_by: pmId,
       status:       'pending',
-      action_type:  'payment',
+      action_type:  'payment_release',
       proposed: {
         bank_account_id: account.id,
         amount: -200,  // -£200 in pounds (DB convention; see DECISIONS 2026-05-07)
@@ -465,7 +465,7 @@ test.describe('Property detail — invoices tab', () => {
     )
     expect(linked).toBeTruthy()
     expect(linked?.status).toBe('pending')
-    expect(linked?.action_type).toBe('payment')
+    expect(linked?.action_type).toBe('payment_release')
   })
 
   // Smoke 15 — PM cannot mark invoice as paid (UI never offers the edge; client guard rejects direct attempts)

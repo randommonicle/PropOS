@@ -44,7 +44,7 @@ import { MoneyInput } from '@/components/shared/MoneyInput'
 import { Plus, Pencil, Trash2, X, AlertTriangle, Lock, Send, ShieldOff } from 'lucide-react'
 import { cn, formatDate, todayISODate } from '@/lib/utils'
 import { formatPounds, poundsToP, pToPounds } from '@/lib/money'
-import { isFinanceRole } from '@/lib/constants'
+import { hasAdminRole } from '@/lib/constants'
 import type { Database } from '@/types/database'
 
 type BankAccount = Database['public']['Tables']['bank_accounts']['Row']
@@ -78,8 +78,8 @@ export function BankAccountsTab({
   propertyId: string
 }) {
   const userId = useAuthStore(s => s.user?.id ?? null)
-  const role = useAuthStore(s => s.firmContext?.role ?? null)
-  const canManageClosure = isFinanceRole(role)
+  const roles = useAuthStore(s => s.firmContext?.roles ?? null)
+  const canManageClosure = hasAdminRole(roles)
 
   const [accounts, setAccounts] = useState<BankAccount[]>([])
   const [loading,  setLoading]  = useState(true)

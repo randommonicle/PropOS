@@ -15,6 +15,7 @@ import { PageHeader } from '@/components/shared/PageHeader'
 import { Button, Card, CardContent, Badge, Input } from '@/components/ui'
 import { HardHat, Plus, Search, Pencil, X, ChevronDown, ChevronUp, Settings2 } from 'lucide-react'
 import { formatDate, daysUntil } from '@/lib/utils'
+import { hasAdminRole, hasDirectorRole } from '@/lib/constants'
 import type { Database } from '@/types/database'
 
 type Contractor = Database['public']['Tables']['contractors']['Row']
@@ -56,8 +57,8 @@ const tradeCatTable = () => (supabase as any).from('trade_categories')
 
 export function ContractorsPage() {
   const firmContext = useAuthStore(s => s.firmContext)
-  const role = firmContext?.role ?? ''
-  const isAdmin = role === 'admin' || role === 'director'
+  const roles = firmContext?.roles ?? null
+  const isAdmin = hasAdminRole(roles) || hasDirectorRole(roles)
 
   const [contractors, setContractors] = useState<Contractor[]>([])
   const [filtered, setFiltered] = useState<Contractor[]>([])
