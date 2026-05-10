@@ -34,8 +34,23 @@ export interface ProposedClosure {
   closed_date:     string
 }
 
+/**
+ * Snapshot for a proposed RICS-designation toggle when the authorisation is
+ * pending (action_type='toggle_rics_designation'). On authorise the application
+ * updates bank_accounts.rics_designated to `new_value`. The flow is
+ * direction-gated to true→false; the protective false→true direction is a
+ * direct edit, not gated. See migration 00024 + DECISIONS 2026-05-10 1g.5.
+ */
+export interface ProposedRicsDesignationToggle {
+  bank_account_id: string
+  new_value:       boolean
+}
+
 /** Discriminated union over the proposed JSONB column shapes. */
-export type ProposedAction = ProposedTransaction | ProposedClosure
+export type ProposedAction =
+  | ProposedTransaction
+  | ProposedClosure
+  | ProposedRicsDesignationToggle
 
 export interface Database {
   public: {

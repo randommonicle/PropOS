@@ -444,6 +444,32 @@ When the demo-mode toggle ships (likely Phase 6 or 7 depending on when the first
 
 ---
 
+## 2026-05-10 — RICS-designation toggle dual-auth (1g.5): direction-gated request flow
+
+**Context:** 1g §8 deferred the RICS-designation toggle dual-auth to 1g.5 with the snapshot shape `{ bank_account_id, new_value: false }`. RICS Client Money Rule 4.7 treats the designation flag as evidence: removing it on an account that ever held client money should not be a single-user action. The direction matters — toggling `false → true` is the protective direction (declaring an account as RICS-designated tightens controls); toggling `true → false` is the high-stakes direction that strips a designation already on record. Only the latter needs gating.
+
+**Decision:**
+
+1. **Schema migration 00024.** `payment_auth_action_type` CHECK constraint widened from `IN ('payment', 'close_bank_account')` to `IN ('payment', 'close_bank_account', 'toggle_rics_designation')`. Drop + re-add (no NOT VALID needed because all existing rows are 'payment' or 'close_bank_account'). The proposed JSONB column stays a single column; the per-action shape is application-validated via `ProposedRicsDesignationToggle = { bank_account_id, new_value }`.
+2. **Direction gating in the UI.** The dual-auth path covers `true → false` only. The protective direction (`false → true`) remains a direct edit through the Bank account form — no request needed. The PM-facing "Request designation removal" button (`ShieldOff` icon) on `BankAccountsTab` is shown only when `!canManageClosure && account.rics_designated === true`. Click → inline confirmation row → insert PA with `action_type='toggle_rics_designation'`, `proposed={ bank_account_id, new_value: false }`. Confirmation banner cites RICS Rule 4.7 (the assertion text doubles as the test anchor — the LESSONS Phase 3 pattern).
+3. **PM-via-button-request, admin-direct (mirrors 1g closure exactly).** Admins / directors continue to flip the `rics_designated` checkbox in the form directly. The asymmetry is deliberate: the dual-auth flow is the path PMs use; admins are not blocked. If a future requirement tightens to "no single-user action regardless of role", the admin-form-checkbox can be gated separately. Recorded as forward-looking (see "Things to watch" below).
+4. **Authorise dispatch.** `PaymentAuthorisationsTab.handleAuthorise` adds a third branch — `await authoriseRicsToggle(pa, proposed)`. Two writes, non-atomic, recoverable: (a) UPDATE `bank_accounts.rics_designated = proposed.new_value`; (b) UPDATE the PA row to `authorised`. `transaction_id` stays null. The snapshot's `new_value` is applied verbatim rather than "negate current" — re-authorising when the row already matches is idempotent. Atomic wrap deferred to the financial-rules Edge Function.
+5. **PA row rendering.** Description column shows `"RICS designation: <account name> → Remove"` (or `"Designate"` if a future flow surfaces the protective direction). Payee / amount / demand columns show `"—"`. Self-auth guard, role gate, cancel-by-requester, and post-action immutability are unchanged from 1f / 1g.
+
+**Smokes (3 added).** `rics-toggle PA pending row renders as a designation-removal entry`, `rics-toggle authorise admin authorises bank_account.rics_designated flips`, `PM-driven UI Request designation removal button creates a rics-toggle PA` (uses PM storage state). Active count goes from 85 to 88.
+
+**Out of scope (deliberate).**
+
+- **Server-side enforcement** of the direction gate, role guard, and self-auth guard — financial-rules Edge Function. *FORWARD: when that function lands, mirror the 00024 CHECK and the UI's `proposed.new_value === false` direction guard.*
+- **Admin direct-flip block** in the BankAccountForm — admins still toggle `rics_designated` directly. *FORWARD: if firm policy hardens to "no single-user action regardless of role", gate the admin checkbox via dual-auth as well.*
+- **`false → true` direction** — direct edit, no request needed (protective direction). *FORWARD: if a regulator flags spurious designations, gate this direction too.*
+- **Atomic transactional wrap** of the two-write authorise — same recovery story as 1g closure.
+- **Firm-wide pending-authorisations dashboard** — still per-property; pulling forward is recorded in the 2026-05-10 Closure DECISIONS entry.
+
+**Rationale:** The migration is one CHECK extension. The TypeScript additions are a 4-line interface + a tuple member + a discriminator branch in two places. The smoke surface mirrors the 1g closure surface 1:1. The asymmetry between PM-request and admin-direct is the same call as 1g closure — keeping the two flows aligned avoids splitting the muscle memory. RICS Rule 4.7's surfacing in the confirmation banner gives the test a stable anchor and explains the constraint to the PM in their own context, satisfying the "statutory citations doubling as test anchors" pattern from LESSONS Phase 3 session 2.
+
+---
+
 ## 2026-05-07 — pgAudit enablement approach
 
 **Context:** Section 4 requires pgAudit to be enabled before any data migration. The Supabase hosted project does not allow direct superuser SQL for extension creation on the free tier in some cases.

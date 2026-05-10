@@ -65,7 +65,9 @@ async function goToPaymentAuthsTab(page: Page) {
 }
 
 /** Seed a property + dual-auth bank account + leaseholder triplet. */
-async function seedScenario(opts: { threshold?: number } = {}) {
+async function seedScenario(
+  opts: { threshold?: number; ricsDesignated?: boolean } = {},
+) {
   await supabase.auth.signInWithPassword({ email: 'admin@propos.local', password: 'PropOS2026!' })
   const { data: prop } = await supabase
     .from('properties').select('id, firm_id').limit(1).single()
@@ -83,6 +85,7 @@ async function seedScenario(opts: { threshold?: number } = {}) {
       account_type: 'service_charge',
       requires_dual_auth: true,
       dual_auth_threshold: opts.threshold ?? 100,
+      rics_designated: opts.ricsDesignated ?? false,
     })
     .select('id, account_name')
     .single()
@@ -531,6 +534,96 @@ test.describe('Property detail — payment authorisations', () => {
       expect(pa?.action_type).toBe('close_bank_account')
       expect(pa?.status).toBe('pending')
       expect((pa?.proposed as { bank_account_id?: string } | null)?.bank_account_id).toBe(account.id)
+      const pmId = await resolvePmUserId()
+      expect(pa?.requested_by).toBe(pmId)
+    } finally {
+      await context.close()
+    }
+  })
+
+  // ── RICS-designation toggle dual-auth (1g.5) ─────────────────────────────
+
+  test('rics-toggle PA — pending row renders as a designation-removal entry', async ({ page }) => {
+    const { prop, account } = await seedScenario({ ricsDesignated: true })
+    const pmId = await resolvePmUserId()
+
+    await supabase.from('payment_authorisations').insert({
+      firm_id: prop.firm_id,
+      requested_by: pmId,
+      status: 'pending',
+      action_type: 'toggle_rics_designation',
+      proposed: { bank_account_id: account.id, new_value: false },
+    })
+
+    await page.goto(`/properties/${prop.id}?tab=payment-authorisations`)
+    const row = page.getByRole('main').locator('tr', {
+      has: page.getByText(`RICS designation: ${account.account_name} → Remove`),
+    })
+    await expect(row).toBeVisible()
+    await expect(row.getByText('Pending')).toBeVisible()
+  })
+
+  test('rics-toggle authorise — admin authorises, bank_account.rics_designated flips to false', async ({ page }) => {
+    const { prop, account } = await seedScenario({ ricsDesignated: true })
+    const pmId = await resolvePmUserId()
+
+    const { data: pa } = await supabase.from('payment_authorisations').insert({
+      firm_id: prop.firm_id,
+      requested_by: pmId,
+      status: 'pending',
+      action_type: 'toggle_rics_designation',
+      proposed: { bank_account_id: account.id, new_value: false },
+    }).select('id').single()
+    if (!pa) throw new Error('Failed to seed rics-toggle PA')
+
+    await page.goto(`/properties/${prop.id}?tab=payment-authorisations`)
+    const row = page.getByRole('main').locator('tr', {
+      has: page.getByText(`RICS designation: ${account.account_name} → Remove`),
+    })
+    await row.getByRole('button', { name: /Authorise request/ }).click()
+    await expect(row.getByRole('button', { name: /Authorise request/ })).toHaveCount(0)
+
+    // Bank account designation flipped.
+    const { data: refreshed } = await supabase
+      .from('bank_accounts').select('rics_designated').eq('id', account.id).single()
+    expect(refreshed?.rics_designated).toBe(false)
+
+    // PA row authorised, transaction_id stays null (no transaction is created).
+    const { data: refreshedPa } = await supabase
+      .from('payment_authorisations').select('status, transaction_id').eq('id', pa.id).single()
+    expect(refreshedPa?.status).toBe('authorised')
+    expect(refreshedPa?.transaction_id).toBeNull()
+  })
+
+  test('PM-driven UI — Request designation removal button creates a rics-toggle PA', async ({ browser }) => {
+    // Runs as the property_manager to exercise the request UX. Uses the PM
+    // storage state saved by auth-pm.setup.ts (DECISIONS 2026-05-10 1f.5).
+    const context = await browser.newContext({ storageState: 'tests/.auth/pm-user.json' })
+    const page = await context.newPage()
+    try {
+      const { prop, account } = await seedScenario({ ricsDesignated: true })
+
+      await page.goto(`/properties/${prop.id}?tab=bank-accounts`)
+      const row = page.getByRole('main').locator('tr', { has: page.getByText(account.account_name) })
+      await row.getByRole('button', { name: `Request designation removal ${account.account_name}` }).click()
+      // Inline confirmation row appears.
+      await page.getByRole('button', { name: 'Confirm request' }).click()
+      // Banner appears with the confirmation message (cites RICS Rule 4.7).
+      const notice = page.getByTestId('rics-toggle-request-notice')
+      await expect(notice).toBeVisible()
+      await expect(notice).toContainText(/RICS Client Money Rule 4\.7/i)
+
+      // PA row exists in pending state with the expected action_type.
+      const { data: pa } = await supabase
+        .from('payment_authorisations')
+        .select('action_type, status, proposed, requested_by')
+        .eq('firm_id', prop.firm_id)
+        .order('requested_at', { ascending: false }).limit(1).single()
+      expect(pa?.action_type).toBe('toggle_rics_designation')
+      expect(pa?.status).toBe('pending')
+      const proposed = pa?.proposed as { bank_account_id?: string; new_value?: boolean } | null
+      expect(proposed?.bank_account_id).toBe(account.id)
+      expect(proposed?.new_value).toBe(false)
       const pmId = await resolvePmUserId()
       expect(pa?.requested_by).toBe(pmId)
     } finally {

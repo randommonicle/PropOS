@@ -43,7 +43,8 @@ import { cn, formatDateTime, slugToTitle } from '@/lib/utils'
 import { formatPounds, poundsToP } from '@/lib/money'
 import { isFinanceRole, type PaymentAuthStatus, type CriticalActionType } from '@/lib/constants'
 import type {
-  Database, ProposedTransaction, ProposedClosure, ProposedAction,
+  Database, ProposedTransaction, ProposedClosure,
+  ProposedRicsDesignationToggle, ProposedAction,
 } from '@/types/database'
 
 type PaymentAuth         = Database['public']['Tables']['payment_authorisations']['Row']
@@ -147,6 +148,8 @@ export function PaymentAuthorisationsTab({
       await authorisePayment(pa, pa.proposed as ProposedTransaction)
     } else if (actionType === 'close_bank_account') {
       await authoriseClosure(pa, pa.proposed as ProposedClosure)
+    } else if (actionType === 'toggle_rics_designation') {
+      await authoriseRicsToggle(pa, pa.proposed as ProposedRicsDesignationToggle)
     } else {
       setActionErr(`Unknown action type: ${actionType}`)
       return
@@ -195,6 +198,44 @@ export function PaymentAuthorisationsTab({
     }
     if (inserted.demand_id) {
       await applyDemandReceiptStatus(inserted.demand_id)
+    }
+    load()
+  }
+
+  /**
+   * 1g.5 — apply a RICS-designation toggle from the proposed snapshot. Two
+   * writes (non-atomic, recoverable): (a) UPDATE bank_accounts.rics_designated
+   * to proposed.new_value; (b) UPDATE the PA row to authorised. transaction_id
+   * stays null. The snapshot's new_value is applied verbatim (not "negate
+   * current"), so a re-authorise where the row already matches is idempotent.
+   * See DECISIONS 2026-05-10 1g.5.
+   */
+  async function authoriseRicsToggle(
+    pa: PaymentAuth, proposed: ProposedRicsDesignationToggle,
+  ) {
+    if (!userId) return
+    const { error: baErr } = await supabase
+      .from('bank_accounts')
+      .update({ rics_designated: proposed.new_value })
+      .eq('id', proposed.bank_account_id)
+    if (baErr) {
+      setActionErr(`Failed to update RICS designation: ${baErr.message}`)
+      return
+    }
+    const { error: paErr } = await supabase
+      .from('payment_authorisations')
+      .update({
+        status: 'authorised',
+        authorised_by: userId,
+        authorised_at: new Date().toISOString(),
+      })
+      .eq('id', pa.id)
+    if (paErr) {
+      setActionErr(
+        `Designation updated but PA link failed: ${paErr.message}. Refresh — ` +
+        'the toggle landed; the PA row may still show pending until refresh.'
+      )
+      return
     }
     load()
   }
@@ -358,7 +399,10 @@ function PaymentAuthRow({
   const accountId = proposed?.bank_account_id ?? null
   const accountName = accountId ? (accountMap.get(accountId) ?? '—') : '—'
   const isClosure = actionType === 'close_bank_account'
-  const txnProposed = !isClosure ? (proposed as ProposedTransaction | null) : null
+  const isRicsToggle = actionType === 'toggle_rics_designation'
+  const isPayment = !isClosure && !isRicsToggle
+  const txnProposed = isPayment ? (proposed as ProposedTransaction | null) : null
+  const ricsProposed = isRicsToggle ? (proposed as ProposedRicsDesignationToggle | null) : null
   const amount = Number(txnProposed?.amount ?? 0)
   const demand = txnProposed?.demand_id ? demandMap.get(txnProposed.demand_id) : null
   const isRequester = !!currentUserId && pa.requested_by === currentUserId
@@ -380,22 +424,26 @@ function PaymentAuthRow({
             <span className="text-amber-700 font-medium">
               Close: {accountName}
             </span>
+          ) : isRicsToggle ? (
+            <span className="text-amber-700 font-medium">
+              RICS designation: {accountName} → {ricsProposed?.new_value ? 'Designate' : 'Remove'}
+            </span>
           ) : (
             txnProposed?.description ?? '—'
           )}
         </td>
         <td className="px-4 py-2 text-muted-foreground">
-          {isClosure ? '—' : (txnProposed?.payee_payer ?? '—')}
+          {isPayment ? (txnProposed?.payee_payer ?? '—') : '—'}
         </td>
         <td className="px-4 py-2 text-right font-mono tabular-nums text-destructive">
-          {isClosure ? '—' : formatPounds(Math.abs(amount))}
+          {isPayment ? formatPounds(Math.abs(amount)) : '—'}
         </td>
         <td className="px-4 py-2 text-xs text-muted-foreground">
-          {isClosure
-            ? '—'
-            : demand
+          {isPayment
+            ? (demand
               ? `Demand £${Math.abs(Number(demand.amount)).toFixed(2)}`
-              : '—'}
+              : '—')
+            : '—'}
         </td>
         <td className="px-4 py-2">
           {isPending && (

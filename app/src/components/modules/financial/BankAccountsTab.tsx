@@ -27,7 +27,7 @@ import {
   Card, CardContent, Button, Badge, Input,
 } from '@/components/ui'
 import { MoneyInput } from '@/components/shared/MoneyInput'
-import { Plus, Pencil, Trash2, X, AlertTriangle, Lock, Send } from 'lucide-react'
+import { Plus, Pencil, Trash2, X, AlertTriangle, Lock, Send, ShieldOff } from 'lucide-react'
 import { cn, formatDate, todayISODate } from '@/lib/utils'
 import { formatPounds, poundsToP, pToPounds } from '@/lib/money'
 import { isFinanceRole } from '@/lib/constants'
@@ -76,6 +76,9 @@ export function BankAccountsTab({
   const [requestingClosureId, setRequestingClosureId] = useState<string | null>(null)
   const [closureNotice, setClosureNotice] = useState<string | null>(null)
   const [closureErr, setClosureErr] = useState<string | null>(null)
+  const [requestingRicsToggleId, setRequestingRicsToggleId] = useState<string | null>(null)
+  const [ricsToggleNotice, setRicsToggleNotice] = useState<string | null>(null)
+  const [ricsToggleErr, setRicsToggleErr] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     const { data } = await supabase
@@ -164,6 +167,37 @@ export function BankAccountsTab({
     )
   }
 
+  /**
+   * Insert a payment_authorisations row with action_type='toggle_rics_designation'
+   * to request that an admin / director authorise removing the RICS-designated
+   * client-account flag. Direction-gated: only true→false flows through this
+   * path (the protective false→true direction is a direct edit). On authorise
+   * the application updates bank_accounts.rics_designated. RICS Client Money
+   * Rule 4.7 — segregation of duties on a high-stakes designation change.
+   * See DECISIONS 2026-05-10 1g.5.
+   */
+  async function handleRequestRicsToggle(account: BankAccount) {
+    setRicsToggleErr(null)
+    if (!userId) { setRicsToggleErr('User session missing.'); return }
+    const { error } = await supabase.from('payment_authorisations').insert({
+      firm_id: firmId,
+      requested_by: userId,
+      status: 'pending',
+      action_type: 'toggle_rics_designation',
+      proposed: {
+        bank_account_id: account.id,
+        new_value: false,
+      },
+    })
+    if (error) { setRicsToggleErr(error.message); return }
+    setRequestingRicsToggleId(null)
+    setRicsToggleNotice(
+      `RICS-designation removal request created for "${account.account_name}". ` +
+      'An admin or director must authorise it under Payment authorisations ' +
+      'before the designation is removed (RICS Client Money Rule 4.7).'
+    )
+  }
+
   if (loading) {
     return <div className="text-sm text-muted-foreground">Loading bank accounts…</div>
   }
@@ -218,6 +252,26 @@ export function BankAccountsTab({
         </div>
       )}
 
+      {ricsToggleErr && (
+        <div className="mb-3 flex items-start gap-2 text-sm text-destructive border border-destructive/30 bg-destructive/5 rounded-md px-3 py-2">
+          <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+          <span className="flex-1">{ricsToggleErr}</span>
+          <button onClick={() => setRicsToggleErr(null)} aria-label="Dismiss error">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      {ricsToggleNotice && (
+        <div className="mb-3 flex items-start gap-2 text-sm border border-amber-300 bg-amber-50 text-amber-900 rounded-md px-3 py-2">
+          <ShieldOff className="h-4 w-4 mt-0.5 flex-shrink-0" />
+          <span className="flex-1" data-testid="rics-toggle-request-notice">{ricsToggleNotice}</span>
+          <button onClick={() => setRicsToggleNotice(null)} aria-label="Dismiss notice">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
       <div className="border rounded-lg overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-muted">
@@ -248,6 +302,7 @@ export function BankAccountsTab({
                   canManageClosure={canManageClosure}
                   isDeleting={deletingId === a.id}
                   isRequestingClosure={requestingClosureId === a.id}
+                  isRequestingRicsToggle={requestingRicsToggleId === a.id}
                   onEdit={() => { setEditing(a); setShowForm(true); setDeleteErr(null) }}
                   onAskDelete={() => { setDeletingId(a.id); setDeleteErr(null) }}
                   onConfirmDelete={() => handleDelete(a)}
@@ -257,6 +312,11 @@ export function BankAccountsTab({
                   }}
                   onConfirmRequestClosure={() => handleRequestClosure(a)}
                   onCancelRequestClosure={() => setRequestingClosureId(null)}
+                  onAskRequestRicsToggle={() => {
+                    setRequestingRicsToggleId(a.id); setRicsToggleErr(null); setRicsToggleNotice(null)
+                  }}
+                  onConfirmRequestRicsToggle={() => handleRequestRicsToggle(a)}
+                  onCancelRequestRicsToggle={() => setRequestingRicsToggleId(null)}
                 />
               ))
             )}
@@ -269,14 +329,16 @@ export function BankAccountsTab({
 
 // ── Single row ────────────────────────────────────────────────────────────────
 function BankAccountRow({
-  account, canManageClosure, isDeleting, isRequestingClosure,
+  account, canManageClosure, isDeleting, isRequestingClosure, isRequestingRicsToggle,
   onEdit, onAskDelete, onConfirmDelete, onCancelDelete,
   onAskRequestClosure, onConfirmRequestClosure, onCancelRequestClosure,
+  onAskRequestRicsToggle, onConfirmRequestRicsToggle, onCancelRequestRicsToggle,
 }: {
   account: BankAccount
   canManageClosure: boolean
   isDeleting: boolean
   isRequestingClosure: boolean
+  isRequestingRicsToggle: boolean
   onEdit: () => void
   onAskDelete: () => void
   onConfirmDelete: () => void
@@ -284,8 +346,14 @@ function BankAccountRow({
   onAskRequestClosure: () => void
   onConfirmRequestClosure: () => void
   onCancelRequestClosure: () => void
+  onAskRequestRicsToggle: () => void
+  onConfirmRequestRicsToggle: () => void
+  onCancelRequestRicsToggle: () => void
 }) {
   const showRequestClosure = !canManageClosure && account.is_active
+  // Direction-gated: only true→false is dual-auth-gated (DECISIONS 2026-05-10 1g.5).
+  // false→true happens via the form (protective direction; no request needed).
+  const showRequestRicsToggle = !canManageClosure && account.rics_designated
   const sortShown = account.sort_code_last4 ? `••${account.sort_code_last4}` : '—'
   const acctShown = account.account_number_last4 ? `••${account.account_number_last4}` : '—'
   return (
@@ -337,6 +405,17 @@ function BankAccountRow({
                 <Send className="h-3.5 w-3.5" />
               </Button>
             )}
+            {showRequestRicsToggle && (
+              <Button
+                variant="ghost" size="sm"
+                className="text-amber-700 hover:text-amber-800"
+                onClick={onAskRequestRicsToggle}
+                aria-label={`Request designation removal ${account.account_name}`}
+                title="Request RICS-designation removal — an admin or director must authorise it (RICS Client Money Rule 4.7)"
+              >
+                <ShieldOff className="h-3.5 w-3.5" />
+              </Button>
+            )}
             <Button
               variant="ghost" size="sm"
               className="text-destructive hover:text-destructive"
@@ -364,6 +443,27 @@ function BankAccountRow({
                 Confirm request
               </Button>
               <Button size="sm" variant="outline" onClick={onCancelRequestClosure}>
+                Cancel
+              </Button>
+            </div>
+          </td>
+        </tr>
+      )}
+      {isRequestingRicsToggle && (
+        <tr className="border-t bg-amber-50">
+          <td colSpan={9} className="px-4 py-3">
+            <div className="flex items-center gap-3 text-sm flex-wrap">
+              <ShieldOff className="h-4 w-4 text-amber-700 flex-shrink-0" />
+              <span>
+                Remove RICS-designated client-account flag on{' '}
+                <strong>{account.account_name}</strong>? Per RICS Client Money
+                Rule 4.7 this is segregated — an admin or director (not you)
+                must authorise it.
+              </span>
+              <Button size="sm" onClick={onConfirmRequestRicsToggle}>
+                Confirm request
+              </Button>
+              <Button size="sm" variant="outline" onClick={onCancelRequestRicsToggle}>
                 Cancel
               </Button>
             </div>

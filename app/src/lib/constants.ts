@@ -132,14 +132,17 @@ export type PaymentAuthStatus = (typeof PAYMENT_AUTH_STATUSES)[number]
 
 /**
  * Critical action types — discriminator on payment_authorisations.action_type.
- * 'payment'              — original 1f flow; uses transaction_id + proposed (ProposedTransaction).
- * 'close_bank_account'   — 1g flow; uses proposed (ProposedClosure); on authorise the
- *                          application updates bank_accounts.is_active=false + closed_date.
- * Future: 'toggle_rics_designation' (1g.5).
+ * 'payment'                  — original 1f flow; uses transaction_id + proposed (ProposedTransaction).
+ * 'close_bank_account'       — 1g flow; uses proposed (ProposedClosure); on authorise the
+ *                              application updates bank_accounts.is_active=false + closed_date.
+ * 'toggle_rics_designation'  — 1g.5 flow; uses proposed (ProposedRicsDesignationToggle); on
+ *                              authorise the application updates bank_accounts.rics_designated.
+ *                              Direction-gated: only true→false is gated; false→true is direct.
  */
 export const CRITICAL_ACTION_TYPES = [
   'payment',
   'close_bank_account',
+  'toggle_rics_designation',
 ] as const
 export type CriticalActionType = (typeof CRITICAL_ACTION_TYPES)[number]
 
