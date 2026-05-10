@@ -22,6 +22,14 @@ export interface ProposedTransaction {
   payee_payer:      string | null
   reference:        string | null
   demand_id:        string | null
+  /**
+   * Optional link to an invoice. When set, the PA authorise flow ALSO updates
+   * the invoice (status='paid', transaction_id=<new>) atomically with the
+   * transaction insert. Populated by InvoicesTab.handleQueueForPayment when a
+   * finance-role staff member queues an approved invoice. Null for PA rows
+   * created from TransactionsTab. See DECISIONS 2026-05-10 — Invoices CRUD.
+   */
+  invoice_id?:      string | null
 }
 
 /**

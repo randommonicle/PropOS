@@ -27,9 +27,12 @@
  *   5. Closure (`is_active: true → false`) and RICS-designation removal
  *      (`rics_designated: true → false`) are dual-auth-gated for non-finance roles:
  *      the PM clicks **Request closure** / **Request designation removal**, which
- *      inserts a `payment_authorisations` row; an admin / director (not the
- *      requester) authorises via PaymentAuthorisationsTab. The protective
- *      direction (`rics_designated: false → true`) is a direct edit, not gated.
+ *      inserts a `payment_authorisations` row; an admin (not the requester)
+ *      authorises via PaymentAuthorisationsTab. RMC directors are CLIENT-side
+ *      and explicitly excluded from staff finance gates per RICS Client money
+ *      handling — both signatories must be staff of the regulated firm.
+ *      The protective direction (`rics_designated: false → true`) is a direct
+ *      edit, not gated. Updated in 1i.2 (was admin + director).
  */
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
@@ -62,10 +65,10 @@ const CURRENT_BALANCE_TOOLTIP =
   'updates automatically when transactions are reconciled and cannot be edited directly.'
 
 const FINANCE_ROLE_TOOLTIP =
-  'Closure and hard-deletion are restricted to admin and director roles. ' +
-  'Property Managers should use the Request closure button to submit a ' +
-  'closure request for an admin or director to authorise (RICS Client Money ' +
-  'Rule 4.7 — segregation of duties).'
+  'Closure and hard-deletion are restricted to admin staff. Property Managers ' +
+  'should use the Request closure button to submit a closure request for an ' +
+  'admin to authorise (RICS Client money handling — segregation of duties; ' +
+  'both signatories must be staff of the firm).'
 
 export function BankAccountsTab({
   firmId,

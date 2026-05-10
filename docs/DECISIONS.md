@@ -5,6 +5,101 @@ Spec reference: PropOS Handoff Document v1.1 — Section 6.2.
 
 ---
 
+## 2026-05-10 — Invoices CRUD with AI extraction (commit 1i.2 — closes Phase 3 §7)
+
+**Context:** Closes the final Phase 3 spec §7 deliverable — "invoice management with AI extraction". The build pulls together the per-property tab pattern from 1d / 1e / 1g / 1h, the dual-auth machinery from 1f / 1g, the Edge Function pattern from Phase 2 dispatch-engine, and the document vault upload pattern from Phase 1. Two regulatory clarifications from the user during plan-first negotiation reshape the scope:
+
+1. **PM-confirmation is mandatory regardless of AI confidence.** AI confidence is informational; PM Confirm is the only gate from `received` to `approved`. Even at confidence = 1.00 the invoice stays in `received` until the PM clicks Confirm.
+2. **`director` role is dropped from staff finance gates.** Research-verified against RICS *Client money handling* (1st ed., Oct 2022 reissue) + RICS Service Charge Residential Management Code 4th ed. (effective 7 April 2026) + TPI Consumer Charter & Standards Edition 3 (effective 1 Jan 2025): both signatories on a managing-agent client-account withdrawal must be staff of the regulated firm. RMC directors / freeholder representatives are CLIENT-side and explicitly excluded. The previous `FINANCE_ROLES = ['admin', 'director']` was a latent regulatory bug — corrected to `['admin']` in this commit.
+
+**Decision:**
+
+1. **Migration 00028.** Three CHECK constraints on `invoices`: `invoices_status_chk` locks the canonical six values from 00005:204 (`received|approved|queued|paid|disputed|rejected`); `invoices_extraction_pair_chk` mirrors the 1i.1 §M-4 audit-stamp coherence pattern (`extracted_by_ai = true` ⇔ `extraction_confidence IS NOT NULL`); `invoices_amount_coherence_chk` locks the spec §6.4 integer-pence arithmetic (`amount_gross = amount_net + COALESCE(vat_amount, 0)` when all three set). Eleven `FORWARD: PROD-GATE` flags planted at the bottom of the migration covering: per-property spend cap, director-approval queue extension, INSERT-trigger-fires-Edge-Function, DAILY_AI_COST_CAP_GBP enforcement, status-transition trigger, INSERT-only `invoices_audit_log`, contractor_id FK constraint, function-split discriminator (research finding F5), contractor-onboarding payee-stamping (F5 sister), BSA HRB Accountable Person sign-off lane (F4), bank-side dual-auth mandate (F6).
+
+2. **Edge Function `document_processing/index.ts` (spec §5.7).** PoC client-invoked via `supabase.functions.invoke('document_processing', { body: { document_id } })` after the InvoicesTab uploads to Storage and inserts the `documents` row. The function downloads the file, calls Anthropic with the runtime model from `ANTHROPIC_RUNTIME_MODEL` (defaults `claude-sonnet-4-6`), parses a strict-shape JSON response (8 fields + confidence + notes), writes back to `documents.ai_extracted_data` + `documents.ai_processed_at`, and inserts/updates the linked `invoices` row stamping `extracted_by_ai=true` + `extraction_confidence` + `extraction_notes`. Error handling is **stage-tagged**: `{ ok: false, stage, message }` per `ExtractionStage` ('invoke' | 'document_load' | 'storage_download' | 'anthropic_call' | 'extraction_parse' | 'documents_update' | 'invoices_upsert'). The client surfaces the stage verbatim ("AI extraction failed at stage: anthropic_call. <message>") so the PM can distinguish recoverable from non-recoverable failures.
+
+3. **`InvoicesTab` — 10th per-property tab.** Drag-drop / file-picker upload (PDF / PNG / JPG, ≤10 MB) drives the AI extraction flow; the drawer auto-opens with extracted fields once `document_processing` resolves. "Create blank invoice" preserves the manual path for invoices without scans. Confidence pill is informational: green ≥0.9, amber ≥0.75 (`AI_CONFIDENCE_REVIEW_THRESHOLD`), destructive <0.75 — paired with an amber "Low confidence — verify all fields" banner when below the threshold. PM Confirm action (`received → approved`) is the only path out of `received`. Queue-for-payment (`approved → queued`) is the finance-only action; it inserts a `payment_authorisations` row with `action_type='payment'` and `proposed.invoice_id` populated, then flips the invoice to `queued`. The `queued → paid` edge is reached **only** by the dual-auth PA authorise flow in `PaymentAuthorisationsTab`, never by direct status edit.
+
+4. **`PaymentAuthorisationsTab.authorisePayment` extension.** When a PA's `proposed.invoice_id` is set, the authorise handler now performs a third write after (a) `transactions.insert` and (b) PA `update`: (c) `invoices.update({ status: 'paid', transaction_id })`. Non-atomic with (a) and (b); recoverable manually if (c) fails (the error message names the exact repair SQL). The `handleReject` handler also reverts `invoices.status` from `queued` to `approved` when an invoice-linked PA is cancelled / rejected, preventing the invoice from being stranded in `queued` with no path forward.
+
+5. **Status state machine — role-tier gating.** A new `app/src/lib/invoices/statusTransitions.ts` module locks the legal edges + the role-gating per edge:
+   - **PM (`property_manager`)** drives: `received → approved` (Confirm), `any → disputed`, `any → rejected`, `disputed → received`, `rejected → received` (re-review path).
+   - **Finance role (today: admin only)** drives: `approved → queued` (Queue-for-payment), `any → disputed`, `any → rejected`. Finance does NOT drive Confirm or re-review (PM-only — preserves audit trail of original decision).
+   - The `queued → paid` edge is **not callable** from the helper — the PA authorise flow is the only path.
+   - `rejectionMessageForTransition(role, from, to)` returns null on success or a human-readable string on failure; the same string is the inline error AND the audit-trail anchor (statutory-citation-as-test-anchor pattern from LESSONS Phase 3 sessions 2 / 3 — extends RICS Client money handling citations).
+
+6. **`isFinanceRole` narrowed: `['admin', 'director'] → ['admin']`.** Closes a latent regulatory bug present since 1d.1. Director was wrongly included in the staff dual-auth gate; a CLIENT-side director cannot stand in as a signatory on a managing-agent client-account withdrawal. Tooltip strings, doc comments, and tab descriptions in `BankAccountsTab` + `PaymentAuthorisationsTab` updated. Smoke `financial-payment-authorisations` cross-user authorise still passes (admin authorising PM-initiated PA); director-related test paths (none specifically) were unaffected. The change is invisible to users today (no firm has a director seeded as staff in PoC); becomes load-bearing the moment a real firm with both directors and admins is onboarded.
+
+7. **Type extension: `ProposedTransaction.invoice_id`.** Optional UUID. Populated by `InvoicesTab.handleQueueForPayment`; null for PAs created from `TransactionsTab`. The PA tab's authorise handler reads it to drive the cross-write to `invoices`. Not propagated into a separate `action_type` value (e.g. `'invoice_payment'`) because the authorise flow is identical to the existing `'payment'` flow — all that changes is the optional cross-write to `invoices`. Function-split discriminator (research F5: `'payment_payee_setup'` vs `'payment_release'`) is the natural follow-up; PROD-GATE flag planted in 00028.
+
+8. **Out of scope (deliberate, FORWARD anchors planted across 11 PROD-GATE flags in 00028).**
+   - Per-property invoice spend cap + director-approval queue (DECISIONS 2026-05-10 forward entry — held for post-Phase-3 successor commit).
+   - INSERT trigger on documents row firing `document_processing` automatically (PoC client-invokes).
+   - DAILY_AI_COST_CAP_GBP per-firm enforcement (Phase 5+).
+   - Status-transition trigger (server-side legality enforcement at DB layer; financial-rules Edge Function commit).
+   - INSERT-only `invoices_audit_log` (Data-integrity / auto-protect pass commit).
+   - `invoices.contractor_id` FK constraint (Phase 5 contractor-onboarding revisit; pairs with the function-split semantic).
+   - Function-split discriminator (`payment_payee_setup` / `payment_release`) on `payment_authorisations.action_type` (1i.3 — role architecture rework).
+   - Multi-role membership + dedicated `accounts` role (1i.3 — see forward entry below).
+   - BSA HRB Accountable Person sign-off lane on major-works invoices (Phase 4).
+   - Bank-side dual-auth mandate (Phase 8 self-host package operational doc).
+   - PDF preview rendering inside the drawer (Phase 6 reporting commit).
+   - C-4 storage RLS for `documents.is_confidential` — leaseholder portal commit (Phase 5).
+
+**Smokes (16 in `financial-invoices.spec.ts`; 14 active + 2 .skip).** Active count: **119 → 133** (12 net new — 14 active minus 1 already-running and 1 that retires no smoke). Two skipped by default to avoid Anthropic spend on every run; toggle skip when validating live deploy. Coverage:
+
+| # | Smoke | Asserts |
+|---|---|---|
+| 1 | Invoices tab is the 10th tab | `tabs.nth(9)` text + URL `?tab=invoices` |
+| 2 | Manual create persists with `extracted_by_ai=false` | DB row state |
+| 3 | AI-extracted invoice — drawer prefills + green pill at 0.95 | Confidence pill present; banner absent |
+| 4 | AI extraction failure surfaces stage in UI | `.skip` (live Edge Function) |
+| 5 | Confidence < 0.75 surfaces amber banner | Banner visible, "55%" + "Low confidence" |
+| 6 | PM edit appends "PM-overrode" to extraction_notes | DB row notes contains override line |
+| 7 | received → approved via Confirm stamps approved_by + approved_at | DB row + drawer-close signal |
+| 8 | DB CHECK rejects status='banana' | 23514 + `invoices_status_chk` |
+| 9 | PA authorise on invoice-linked payment → invoice paid + transaction_id | DB row + transactions.invoice_id |
+| 10 | Delete blocked by FK 23503 when transaction references invoice | Inline error + row preserved |
+| 11 | CHECK rejects extracted_by_ai=true with NULL confidence | 23514 + `invoices_extraction_pair_chk` |
+| 12 | CHECK rejects gross ≠ net + vat | 23514 + `invoices_amount_coherence_chk` |
+| 13 | PM confirm mandatory at confidence=1.0 | Status stays `received`; Confirm button visible |
+| 14 | Queue-for-payment creates PA + invoice → queued | DB rows + proposed.invoice_id populated |
+| 15 | PM cannot drive invoice → paid (no UI affordance) | No "Paid" option; queue button only |
+| 16 | LIVE Edge Function pipeline | `.skip` (manual deploy verification) |
+
+**Regulatory citation hygiene (research-driven).** RICS *Client money handling* (1st ed., Oct 2022 reissue) is the binding standard for dual-auth on client-account withdrawals — no monetary threshold; segregation between payee-setup and payment-release functions; both signatories must be staff of the firm. RICS Service Charge Residential Management Code 4th edition is effective 7 April 2026 (NOT September 2025 — corrected from earlier plan). TPI Consumer Charter & Standards Edition 3 effective 1 January 2025 reinforces. Tooltip strings + audit-trail anchors updated to cite "RICS Client money handling — segregation of duties; both signatories must be staff of the firm" rather than the previous "RICS Client Money Rule 4.7" framing (which was approximate and may have been mis-numbered — section verification carried as a forward cleanup item).
+
+**Rationale:** Closing Phase 3 today on the `admin`-only dual-auth stand-in is regulatory-acceptable (two distinct people = compliant under RICS Client money handling) but architecturally incomplete (the function-split between payee-setup and payment-release is not modelled, nor is the multi-role membership requirement). Both gaps are flagged across 11 PROD-GATE anchors and lift in 1i.3. The PM-confirm-mandatory gate is the load-bearing PoC behaviour: it means an AI hallucination at 100% confidence still requires human verification before an invoice can move toward payment — the PoC is safe to demo to a regulated customer on this dimension. The role-tier asymmetry (accounts → admin) is good practice not regulation; lifting it in 1i.3 (with the dedicated `accounts` role + multi-role + RLS sweep) restores firm-side process control without changing the regulatory posture this commit achieves. The InvoicesTab + Edge Function shape mirrors the document-vault upload pattern and the Phase 2 Edge Function deploy convention — no new architectural surface, just the bridging glue between document_type='invoice' uploads and the existing dual-auth queue.
+
+---
+
+## 2026-05-10 — Forward: 1i.3 — Role architecture rework + multi-role + tier-asymmetric dual-auth (forward-looking)
+
+**Context:** PropOS today gates regulated-finance actions on a single `users.role TEXT` column. Two requirements surfaced during 1i.2 plan-first negotiation cannot be satisfied by that shape:
+
+1. **Multi-role membership.** A partner at the firm may legitimately hold both `accounts` and `admin` privileges. The single-column model cannot represent overlapping roles. The dual-auth gate (two distinct *people*) still holds because the self-auth guard checks `user_id`, not role intersection — but the role-tier-asymmetric gate (`accounts` initiates; `admin` releases) needs a way to ask "does this user hold admin?" independently of "does this user hold accounts?".
+2. **Dedicated `accounts` role.** Today the closest staff role between `property_manager` and `admin` does not exist — finance staff who upload invoices and provide the first-leg auth on payment runs are forced into either `admin` (over-privileged) or `property_manager` (under-privileged). 1i.2 ships `admin`-only as a PoC stand-in and plants PROD-GATE anchors at every relevant code site.
+
+**Decision (forward-looking — no code in this commit):**
+
+When 1i.3 lands as the closing commit before Phase 4, it should cover:
+
+1. **Migration 00029** — `user_roles (user_id UUID, role TEXT, PRIMARY KEY (user_id, role))` junction table; backfill from existing `users.role` (one row per user); add the `accounts` role to the canonical set; drop `users.role` only after all consumers updated. Foreign-key cascade on user delete.
+2. **JWT custom-access-token hook update** — build a `user_roles[]` array claim instead of the single `user_role` string. `auth_user_role()` deprecated in favour of `'admin' = ANY(auth_user_roles())` patterns in RLS predicates.
+3. **`useAuth.ts` rewrite** (sister to the 1i.1 H-7 fix) — read the array claim from JWT; expose the array as `firmContext.roles: string[]` not `firmContext.role: string`.
+4. **Role-helper split** — `isFinanceRole` deprecated in favour of `hasAccountsRole(roles)`, `hasAdminRole(roles)`, `hasAnyFinanceRole(roles)` (= accounts OR admin). Every consumer touched: `BankAccountsTab`, `PaymentAuthorisationsTab`, `InvoicesTab`, anywhere `firmContext.role` is read.
+5. **Mechanical RLS sweep** — every policy that filters on role gets the `ANY(auth_user_roles())` rewrite. Comparable in shape to 1i.1's C-2 30-policy sweep; same drop+recreate rhythm; same Dashboard SQL Editor false-positive note (LESSONS Phase 3 session 4).
+6. **Tier-asymmetric gate flips on** — `InvoicesTab.handleQueueForPayment` requires `hasAccountsRole`; `PaymentAuthorisationsTab.handleAuthorise` for `action_type='payment'` requires `hasAdminRole`. Self-auth guard unchanged. PROD-GATE anchors planted in 1i.2 across `constants.ts`, `BankAccountsTab.tsx`, `PaymentAuthorisationsTab.tsx`, `InvoicesTab.tsx`, `00028_*.sql` lift in this commit.
+7. **Function-split discriminator** — `payment_authorisations.action_type` CHECK widened to include `'payment_payee_setup'` (creating/changing the payee bank details on a contractor record) and `'payment_release'` (the actual money-out auth — the existing `'payment'` value renames here). Maps to RICS *Client money handling* binding rule. Pairs with item 8.
+8. **Contractor-onboarding payee-stamping** — `contractors` table gains `approved_by UUID REFERENCES users(id)` + `approved_at TIMESTAMPTZ`. The PA authorise handler enforces `authoriser_id != contractor.approved_by` (a stronger gate than `user_id != requester_id`).
+9. **Smokes** — ~10–12 new smokes covering: multi-role assignment via junction, queue-as-accounts, authorise-as-admin, queue-as-admin-only-rejected (mirror of the post-1i.3 prohibition), multi-role-person-cannot-self-dual-auth, RLS read-scope unchanged under array claim, JWT-claim shape, function-split discriminator on PA insert, payee-setter ≠ authoriser gate.
+
+**Sequencing.** 1i.3 is the natural pre-Phase-4 commit because Phase 4 (BSA module) will gate features on roles and benefits from the multi-role model from day one. Doing the role architecture rework before Phase 4 is cheaper than retrofitting. Plan-first gate produces full file list + smoke list before code, comparable in shape to 1i.1 (which closed 12 of 38 audit findings in one commit).
+
+*FORWARD: this entry is the canonical scope for 1i.3. Every PROD-GATE flag planted in 1i.2 referencing "1i.3" maps back to a numbered item above.*
+
+---
+
 ## 2026-05-07 — Supabase key format
 
 **Context:** The Supabase project uses the new `sb_publishable_*` / `sb_secret_*` key format introduced in 2025.

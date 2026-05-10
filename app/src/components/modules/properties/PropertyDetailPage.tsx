@@ -38,7 +38,7 @@ import { cn, formatDate, todayISODate } from '@/lib/utils'
 import { formatPounds } from '@/lib/money'
 import {
   BankAccountsTab, ServiceChargeAccountsTab, DemandsTab, TransactionsTab,
-  PaymentAuthorisationsTab, ReconciliationTab,
+  PaymentAuthorisationsTab, ReconciliationTab, InvoicesTab,
 } from '@/components/modules/financial'
 import type { Database } from '@/types/database'
 
@@ -50,7 +50,7 @@ type Leaseholder = Database['public']['Tables']['leaseholders']['Row']
 const SELECT_CLASS = 'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm'
 
 /** Tab identifiers — also used as the `?tab=` search-param values for deep linking. */
-const TAB_VALUES = ['overview', 'units', 'leaseholders', 'bank-accounts', 'service-charge-accounts', 'demands', 'transactions', 'payment-authorisations', 'reconciliation'] as const
+const TAB_VALUES = ['overview', 'units', 'leaseholders', 'bank-accounts', 'service-charge-accounts', 'demands', 'transactions', 'payment-authorisations', 'reconciliation', 'invoices'] as const
 type TabValue = typeof TAB_VALUES[number]
 const DEFAULT_TAB: TabValue = 'overview'
 
@@ -195,6 +195,7 @@ export function PropertyDetailPage() {
             <TabsTrigger value="transactions">Transactions</TabsTrigger>
             <TabsTrigger value="payment-authorisations">Payment authorisations</TabsTrigger>
             <TabsTrigger value="reconciliation">Reconciliation</TabsTrigger>
+            <TabsTrigger value="invoices">Invoices</TabsTrigger>
           </TabsList>
 
           {/* ── Overview tab ─────────────────────────────────────────────── */}
@@ -542,6 +543,11 @@ export function PropertyDetailPage() {
           {/* ── Reconciliation tab ───────────────────────────────────────── */}
           <TabsContent value="reconciliation" className="space-y-8">
             <ReconciliationTab firmId={firmContext!.firmId} propertyId={property.id} />
+          </TabsContent>
+
+          {/* ── Invoices tab (1i.2 — closes Phase 3 §7) ─────────────────── */}
+          <TabsContent value="invoices" className="space-y-8">
+            <InvoicesTab firmId={firmContext!.firmId} propertyId={property.id} />
           </TabsContent>
         </Tabs>
       </div>

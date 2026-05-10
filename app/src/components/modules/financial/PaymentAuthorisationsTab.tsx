@@ -24,8 +24,12 @@
  *      requester. Surfaces an inline error citing RICS Client Money / TPI
  *      segregation of duties. Self-rejection (cancel-by-requester) IS
  *      permitted and is exposed as a separate "Cancel request" action.
- *   2. Role guard. Only `admin` or `director` roles may authorise or reject.
- *      Mirrors 1d.1's bank account closure role gate.
+ *   2. Role guard. Only `admin` (staff) may authorise or reject. RMC
+ *      directors / freeholder representatives — the `director` role — are
+ *      CLIENT-side and explicitly excluded from staff finance gates per RICS
+ *      Client money handling (1st ed., Oct 2022 reissue): both signatories
+ *      must be staff of the regulated firm. Updated in 1i.2 (was admin +
+ *      director; the director inclusion was a latent regulatory bug).
  *   3. On authorise, two writes happen client-side: (a) INSERT a transactions
  *      row from the proposed JSONB snapshot; (b) UPDATE the PA row with
  *      transaction_id, status='authorised', authorised_by, authorised_at.
@@ -64,8 +68,9 @@ const SELF_AUTH_TOOLTIP =
   'duties). Cancel the request instead if you no longer want to proceed.'
 
 const ROLE_GATE_TOOLTIP =
-  'Authorisation is restricted to admin and director roles. Property Managers ' +
-  'cannot authorise or reject payment authorisation requests.'
+  'Authorisation is restricted to admin staff. Property Managers and RMC ' +
+  'directors cannot authorise or reject payment authorisation requests. ' +
+  'RICS Client money handling — both signatories must be staff of the firm.'
 
 export function PaymentAuthorisationsTab({
   firmId,
@@ -158,7 +163,9 @@ export function PaymentAuthorisationsTab({
 
   async function authorisePayment(pa: PaymentAuth, proposed: ProposedTransaction) {
     if (!userId) return
-    // (a) Insert the transaction from the proposed snapshot.
+    // (a) Insert the transaction from the proposed snapshot. invoice_id from
+    // the snapshot lands on the transactions row when present (1i.2 — invoice-
+    // queue-for-payment flow). transactions.invoice_id FK is at 00005:227.
     const { data: inserted, error: txErr } = await supabase
       .from('transactions').insert({
         firm_id:          firmId,
@@ -171,9 +178,10 @@ export function PaymentAuthorisationsTab({
         payee_payer:      proposed.payee_payer,
         reference:        proposed.reference,
         demand_id:        proposed.demand_id,
+        invoice_id:       proposed.invoice_id ?? null,
         created_by:       pa.requested_by,
       })
-      .select('id, demand_id')
+      .select('id, demand_id, invoice_id')
       .single()
     if (txErr || !inserted) {
       setActionErr(`Failed to create transaction: ${txErr?.message ?? 'no row returned'}`)
@@ -198,6 +206,30 @@ export function PaymentAuthorisationsTab({
     }
     if (inserted.demand_id) {
       await applyDemandReceiptStatus(inserted.demand_id)
+    }
+    // (c) If this PA pays an invoice, flip invoice → paid + link transaction.
+    // Non-atomic with (a) and (b); recoverable because re-running the authorise
+    // path is blocked (PA is now `authorised`) but a manual repair is cheap:
+    // an admin can `UPDATE invoices SET status='paid', transaction_id=...` for
+    // the invoice referenced in the PA's proposed snapshot. The FORWARD: PROD-
+    // GATE wrap (financial-rules Edge Function) makes this atomic.
+    if (inserted.invoice_id) {
+      const { error: invErr } = await supabase
+        .from('invoices')
+        .update({
+          status: 'paid',
+          transaction_id: inserted.id,
+        })
+        .eq('id', inserted.invoice_id)
+      if (invErr) {
+        setActionErr(
+          `Transaction + PA authorised but invoice link failed: ${invErr.message}. ` +
+          'The payment is recorded; the invoice may still show as queued. Refresh; ' +
+          'manual repair: an admin can flip invoices.status=paid + transaction_id=' +
+          `${inserted.id} for invoice ${inserted.invoice_id}.`,
+        )
+        return
+      }
     }
     load()
   }
@@ -294,6 +326,19 @@ export function PaymentAuthorisationsTab({
       })
       .eq('id', pa.id)
     if (error) { setActionErr(error.message); return }
+    // 1i.2 — invoice-linked PA cancel/reject reverts the invoice from queued
+    // back to approved so an accounts user can re-queue (or the PM can dispute
+    // / reject the invoice). Without this, a rejected PA leaves the invoice
+    // stranded in `queued` with no path forward.
+    const proposedInvoiceId =
+      (pa.proposed as ProposedTransaction | null)?.invoice_id ?? null
+    if (proposedInvoiceId && pa.action_type === 'payment') {
+      await supabase
+        .from('invoices')
+        .update({ status: 'approved' })
+        .eq('id', proposedInvoiceId)
+        .eq('status', 'queued')
+    }
     setRejectingId(null)
     setRejectReason('')
     load()

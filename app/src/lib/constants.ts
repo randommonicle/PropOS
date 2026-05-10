@@ -35,8 +35,23 @@ export const COMPLIANCE_REMINDER_DAYS_DEFAULT = [90, 30, 14]
 // Source: LTA 1985 s.20
 export const SECTION_20_OBSERVATION_PERIOD_DAYS = 30
 
-// Invoice extraction confidence threshold below which the AI result is flagged for human review
+// Invoice extraction confidence threshold below which the AI result is flagged
+// for human review with an amber banner. INFORMATIONAL ONLY — PM confirmation
+// is mandatory regardless of confidence (DECISIONS 2026-05-10 — Invoices CRUD
+// with AI extraction). A confidence of 1.00 still requires explicit PM confirm.
 export const AI_CONFIDENCE_REVIEW_THRESHOLD = 0.75
+
+// Invoice statuses — matches invoices_status_chk (00028) and 00005:204.
+// State machine + role-gating documented in app/src/lib/invoices/statusTransitions.ts.
+export const INVOICE_STATUSES = [
+  'received',
+  'approved',
+  'queued',
+  'paid',
+  'disputed',
+  'rejected',
+] as const
+export type InvoiceStatus = (typeof INVOICE_STATUSES)[number]
 
 // User roles — matches the role column in the users table
 export const USER_ROLES = [
@@ -50,12 +65,31 @@ export const USER_ROLES = [
 export type UserRole = (typeof USER_ROLES)[number]
 
 /**
- * Roles authorised to perform bank-account closure and hard-delete (the
- * regulated-finance actions). See DECISIONS 2026-05-09 — bank account closure
- * role gate. Replaced in commit 1f by the full Critical-Action Authorisations
- * dual-auth flow, which will additionally require a second signer.
+ * Roles authorised to perform regulated-finance actions: bank-account closure
+ * authorisation, payment authorisation, invoice queue-for-payment, and the
+ * RICS-designation toggle. RICS Client money handling (1st ed., Oct 2022
+ * reissue) requires both signatories on a managing-agent client-account
+ * withdrawal to be staff of the regulated firm. The `director` role represents
+ * RMC directors / freeholder representatives — a CLIENT-side role with portal
+ * access, not staff — and is therefore explicitly excluded.
+ *
+ * Regulatory anchor: RICS Client money handling §X.X (verify exact section
+ * when wired into smoke audit-trail strings) + RICS Service Charge Residential
+ * Management Code, 4th edition (effective 7 April 2026) + TPI Consumer Charter
+ * & Standards Edition 3 (effective 1 January 2025).
+ *
+ * Role-tier asymmetry (e.g. accounts-initiates / partner-releases) is good
+ * practice, not a regulatory mandate. The binding rule is "two distinct
+ * people; segregation of payee-setup vs payment-release functions". Tier
+ * asymmetry + a dedicated `accounts` role land in 1i.3 alongside multi-role
+ * membership.
+ *
+ * FORWARD: PROD-GATE — when 1i.3 lands, FINANCE_ROLES expands to a function
+ * (or splits into hasAccountsRole / hasAdminRole helpers consuming the
+ * user_roles[] JWT claim) and the role-tier-asymmetric dual-auth gate
+ * activates in PaymentAuthorisationsTab + InvoicesTab queue handler.
  */
-export const FINANCE_ROLES = ['admin', 'director'] as const satisfies readonly UserRole[]
+export const FINANCE_ROLES = ['admin'] as const satisfies readonly UserRole[]
 export function isFinanceRole(role: UserRole | null | undefined): boolean {
   return role != null && (FINANCE_ROLES as readonly UserRole[]).includes(role)
 }

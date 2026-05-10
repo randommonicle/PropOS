@@ -37,4 +37,17 @@ if %ERRORLEVEL% neq 0 (
 echo OK: contractor-response
 
 echo.
+echo Deploying document_processing ^(JWT verified: PMs are authenticated^)...
+npx supabase functions deploy document_processing --project-ref %PROJECT_REF%
+if %ERRORLEVEL% neq 0 (
+  echo FAILED: document_processing
+  exit /b %ERRORLEVEL%
+)
+echo OK: document_processing
+
+echo.
 echo All functions deployed successfully.
+echo.
+echo Reminder: ANTHROPIC_API_KEY must be set as a Supabase secret for document_processing:
+echo   supabase secrets set ANTHROPIC_API_KEY=sk-ant-... --project-ref %PROJECT_REF%
+echo Optionally set ANTHROPIC_RUNTIME_MODEL ^(defaults to claude-sonnet-4-6^).
