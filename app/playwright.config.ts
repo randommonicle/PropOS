@@ -34,19 +34,27 @@ export default defineConfig({
   },
 
   projects: [
-    // Step 1: log in and save auth state to disk
+    // Step 1: log in as admin and save auth state to disk
     {
       name: 'setup',
       testMatch: '**/auth.setup.ts',
     },
-    // Step 2: run smoke tests using saved auth state
+    // Step 1b: log in as the demo property manager and save its auth state.
+    // Tests that exercise cross-user flows (e.g. payment authorisations where
+    // a PM requests and an admin authorises) override storageState locally
+    // via test.use({ storageState: 'tests/.auth/pm-user.json' }).
+    {
+      name: 'setup-pm',
+      testMatch: '**/auth-pm.setup.ts',
+    },
+    // Step 2: run smoke tests using saved admin auth state by default.
     {
       name: 'smoke',
       use: {
         ...devices['Desktop Chrome'],
         storageState: 'tests/.auth/user.json',
       },
-      dependencies: ['setup'],
+      dependencies: ['setup', 'setup-pm'],
     },
   ],
 })

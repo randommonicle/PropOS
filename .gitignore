@@ -32,11 +32,11 @@ Thumbs.db
 # TypeScript
 *.tsbuildinfo
 
-# Playwright
-app/tests/.auth/user.json
+# Playwright — per-role storage states (admin, PM, director, future test users)
+app/tests/.auth/*.json
 app/playwright-report/
 app/test-results/
-tests/smoke_py/.auth/user.json
+tests/smoke_py/.auth/*.json
 
 # Python
 __pycache__/

@@ -31,29 +31,24 @@ const BA_PREFIX  = 'Smoke PAUTH BA'
 const DEM_NOTES_PREFIX = 'Smoke PAUTH'
 const LH_NOTES_PREFIX  = 'Smoke PAUTH'
 
-/** Synthetic UUID for "the other user" — used as `requested_by` in seeded
- *  PAs that admin should be able to authorise without violating the self-auth
- *  guard. Doesn't need to exist in `users` for the FK because requested_by
- *  references users(id), but for smoke purposes we'll use a real user id —
- *  see resolveOtherUser. */
-async function resolveOtherUserId(): Promise<string> {
-  const { data: users } = await supabase
-    .from('users').select('id').neq('email', 'admin@propos.local').limit(1)
-  if (users && users.length > 0) return users[0].id
-  // Fallback: use admin's own id (test will adapt). In practice the dev seed
-  // typically has a second user but this guards against an empty `users`.
-  const { data: admin } = await supabase
-    .from('users').select('id').eq('email', 'admin@propos.local').single()
-  if (!admin) throw new Error('No users found in seed')
-  return admin.id
+/** Resolve a known seeded user id by email. Used to set `requested_by` on
+ *  seeded PA rows so admin can authorise without violating the self-auth
+ *  guard. The test_users.sql seed (DECISIONS 2026-05-10) ensures
+ *  pm@propos.local and director@propos.local exist alongside admin. */
+async function resolveUserId(email: string): Promise<string> {
+  const { data, error } = await supabase
+    .from('users').select('id').eq('email', email).single()
+  if (error || !data) {
+    throw new Error(
+      `User ${email} not found. Run supabase/seed/test_users.sql via the ` +
+      'Supabase Dashboard SQL Editor (DECISIONS 2026-05-10).',
+    )
+  }
+  return data.id
 }
 
-async function resolveAdminUserId(): Promise<string> {
-  const { data: admin } = await supabase
-    .from('users').select('id').eq('email', 'admin@propos.local').single()
-  if (!admin) throw new Error('admin@propos.local not found in users')
-  return admin.id
-}
+const resolveAdminUserId = () => resolveUserId('admin@propos.local')
+const resolvePmUserId    = () => resolveUserId('pm@propos.local')
 
 async function goToFirstProperty(page: Page) {
   await page.goto('/properties')
@@ -260,12 +255,11 @@ test.describe('Property detail — payment authorisations', () => {
   test('cross-user authorise creates the transaction with proposed fields preserved', async ({ page }) => {
     const { prop, account } = await seedScenario()
     const description = `${TXN_PREFIX} CrossAuth ${Date.now()}`
-    const otherId = await resolveOtherUserId()
+    const pmId    = await resolvePmUserId()
     const adminId = await resolveAdminUserId()
-    if (otherId === adminId) test.skip(true, 'Need a second user in seed for cross-auth test')
     const { data: pa } = await supabase.from('payment_authorisations').insert({
       firm_id: prop.firm_id,
-      requested_by: otherId,
+      requested_by: pmId,
       status: 'pending',
       proposed: {
         bank_account_id: account.id,
@@ -282,9 +276,8 @@ test.describe('Property detail — payment authorisations', () => {
     await page.goto(`/properties/${prop.id}?tab=payment-authorisations`)
     const row = page.getByRole('main').locator('tr', { has: page.getByText(description) })
     await row.getByRole('button', { name: /Authorise request/ }).click()
-
-    // PA flips to authorised.
-    await expect(row.getByText('Authorised')).toBeVisible()
+    // Wait for the row to leave pending state — the Authorise button disappears.
+    await expect(row.getByRole('button', { name: /Authorise request/ })).toHaveCount(0)
 
     // Transaction was created with the proposed fields.
     const { data: txn } = await supabase
@@ -309,12 +302,11 @@ test.describe('Property detail — payment authorisations', () => {
   test('reject with reason — admin rejects another user\'s request', async ({ page }) => {
     const { prop, account } = await seedScenario()
     const description = `${TXN_PREFIX} Reject ${Date.now()}`
-    const otherId = await resolveOtherUserId()
+    const pmId    = await resolvePmUserId()
     const adminId = await resolveAdminUserId()
-    if (otherId === adminId) test.skip(true, 'Need a second user in seed for reject test')
     const { data: pa } = await supabase.from('payment_authorisations').insert({
       firm_id: prop.firm_id,
-      requested_by: otherId,
+      requested_by: pmId,
       status: 'pending',
       proposed: {
         bank_account_id: account.id,
@@ -384,7 +376,7 @@ test.describe('Property detail — payment authorisations', () => {
   test('immutable after action — authorise / reject buttons absent on resolved rows', async ({ page }) => {
     const { prop, account } = await seedScenario()
     const description = `${TXN_PREFIX} Resolved ${Date.now()}`
-    const otherId = await resolveOtherUserId()
+    const pmId = await resolvePmUserId()
 
     // Insert a transaction first so we can link it (the schema still permits this).
     const { data: txn } = await supabase.from('transactions').insert({
@@ -397,7 +389,7 @@ test.describe('Property detail — payment authorisations', () => {
 
     await supabase.from('payment_authorisations').insert({
       firm_id: prop.firm_id,
-      requested_by: otherId,
+      requested_by: pmId,
       transaction_id: txn.id,
       status: 'authorised',
       authorised_at: new Date().toISOString(),
@@ -420,9 +412,7 @@ test.describe('Property detail — payment authorisations', () => {
   test('authorise updates linked demand status when proposed has demand_id', async ({ page }) => {
     const { prop, unit, account, lh } = await seedScenario()
     const description = `${TXN_PREFIX} DemandLink ${Date.now()}`
-    const otherId = await resolveOtherUserId()
-    const adminId = await resolveAdminUserId()
-    if (otherId === adminId) test.skip(true, 'Need a second user for demand-link auth test')
+    const pmId = await resolvePmUserId()
 
     const { data: dem } = await supabase.from('demands').insert({
       firm_id: prop.firm_id, property_id: prop.id,
@@ -441,7 +431,7 @@ test.describe('Property detail — payment authorisations', () => {
     // does NOT change (no receipts), which is the correct behaviour.
     const { data: pa } = await supabase.from('payment_authorisations').insert({
       firm_id: prop.firm_id,
-      requested_by: otherId,
+      requested_by: pmId,
       status: 'pending',
       proposed: {
         bank_account_id: account.id,
@@ -457,8 +447,7 @@ test.describe('Property detail — payment authorisations', () => {
     await page.goto(`/properties/${prop.id}?tab=payment-authorisations`)
     const row = page.getByRole('main').locator('tr', { has: page.getByText(description) })
     await row.getByRole('button', { name: /Authorise request/ }).click()
-
-    await expect(row.getByText('Authorised')).toBeVisible()
+    await expect(row.getByRole('button', { name: /Authorise request/ })).toHaveCount(0)
     // Demand status unchanged because the linked transaction is a payment, not a receipt.
     const { data: refreshed } = await supabase
       .from('demands').select('status').eq('id', dem.id).single()

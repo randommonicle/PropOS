@@ -358,6 +358,71 @@ When the role taxonomy is expanded — likely at a phase boundary so seed data, 
 
 ---
 
+## 2026-05-10 — Test users seed pattern, plus-addressing convention, and demo-data sizing
+
+**Context:** The Phase 3 1f smoke spec exposed a gap: 3 cross-user payment-authorisation tests had to skip because the dev seed contained only `admin@propos.local`. RICS-style segregation-of-duties tests need at least one non-admin user. Beyond closing that immediate gap, the wider question of demo / fake data showed up — both for unblocking tests and for screenshots, exploratory testing, and eventual sales / audit demos.
+
+**Decision:**
+
+1. **Test-user seed pattern.** Test users follow a two-step process: create the auth.users entry via Supabase Dashboard (auto-confirm, password `PropOS2026!` to match admin), then run `supabase/seed/test_users.sql` via Dashboard SQL Editor to insert the matching `public.users` row with the right firm_id and role. The SQL is idempotent (`ON CONFLICT (id) DO UPDATE`) so re-running is safe and refreshes role / full_name without duplicates. Adding more test users later (additional PMs, leaseholders for portal tests, contractor users) follows the same flow — extend the SQL with more `WHERE au.email IN (...)` cases.
+2. **Initial test-user set (Size S, this commit).**
+   - `pm@propos.local` — role `property_manager`, full name "Demo Property Manager"
+   - `director@propos.local` — role `director`, full name "Demo Director"
+   - `admin@propos.local` (existing) — role `admin`, unchanged
+3. **Plus-addressing convention for operational emails.** Auth login emails are simple `<role>@propos.local` (local-only, never leave the dev project). When seed data populates the `email` field on operational records (leaseholders, contractors), it routes to the developer's two real inboxes via plus-addressing:
+   - `ben.graham240689+propos-<context>@gmail.com` for Gmail-routed (admin, PMs, contractors)
+   - `ben240689+propos-<context>@proton.me` for Proton-routed (director, leaseholders)
+   - The `+` part is metadata — Gmail and Proton both deliver to the base inbox and let the developer sort by the tag. Live email flows (dispatch engine, demand notices) reach a real inbox so the pipeline is end-to-end testable without spamming third parties.
+4. **Storage state per role.** Each test user has its own Playwright storage state file under `tests/.auth/<role>-user.json` (gitignored). Tests that exercise cross-user behaviour use `test.use({ storageState: '...' })` to swap the auth identity for the file. The default project storage state is admin (no behavioural change for existing tests). The `auth-pm.setup.ts` setup project saves the PM storage state on every test run; future role setups (`auth-director.setup.ts`, etc.) follow the same pattern when needed.
+5. **Production safety.** The `test_users.sql` script will only ever insert against the firm row already present — there is no cross-firm operation. The script's pre-flight `DO $$` block raises an error if no firm exists. Combined with the per-environment `DB_URL` and the Dashboard-only execution path (no automation), the surface for accidentally seeding production is limited.
+
+**Demo-data sizing — flagged forward-looking expansions:**
+
+6. **Size M (planned, post-1g).** Realistic firm + property + leaseholder + financial demo data:
+   - 3-5 properties with varied profiles (Victorian conversion, 1970s ex-LA, modern build, HRB > 18m, mixed-use commercial-over-residential)
+   - 10-30 units across them; 10-30 leaseholders mixed individual / company / current / historical
+   - 1-3 bank accounts per property, varied types and dual-auth thresholds, some RICS-designated
+   - 2 service charge years per property (current open + last finalised)
+   - 30-50 demands at all status states
+   - 50-100 transactions covering receipts / payments / journals, with ~60% reconciled and ~10% statement-imported
+   - 5-10 payment authorisations across pending / authorised / rejected
+   - All emails route via plus-addressing
+7. **Size L (full demo, phase boundary).** Everything in Size M, plus:
+   - **Statutory documents per property** — every property has at least one of each required type with varied expiry dates so RAG status varies across the suite: EICR, FRA, gas safety, asbestos management + refurbishment surveys, lift LOLER (where applicable), insurance schedule, H&S policy, water hygiene / Legionella, PAT testing, fire suppression (HRBs), emergency lighting, planning consents / building regs.
+   - **Section 20 consultations at every lifecycle stage** — at least one of each: `stage1_pending`, `stage1_observation_period`, `stage1_closed`, `stage2_pending`, `stage2_observation_period`, `stage2_closed → awarded`, `dispensation_applied → dispensation_granted`, `complete`, `withdrawn`.
+   - 5-10 contractors with varied trade categories and varied response histories (some routinely accept, some decline, some no-response — so the dispatch escalation path is exercised).
+   - Compliance items at varied RAG (red / amber / green).
+   - Insurance with varied renewal dates.
+   - Works orders at varied lifecycle states.
+   - Documents folder in Storage populated with sample PDFs (lorem-ipsum filler is fine; realistic filenames + metadata).
+   - BSA / HRB records for the HRB property (lands when Phase 5 schema is in place).
+
+   Each property in Size L should be a complete picture — opening it should show the full PropOS feature set without any "TODO" or empty-state placeholders. Targeted at audit / sales / training demos.
+
+**Per-stage flagging.** Each size's commit must end its DECISIONS entry with an explicit "still missing" list pointing at the next size, so future-me can read the most recent entry and know what's been seeded vs what's expected next. This prevents the "is this all the demo data, or is more coming?" ambiguity.
+
+---
+
+## 2026-05-10 — Demo mode toggle (forward-looking requirement)
+
+**Context:** A real PropOS deployment must distinguish demo / training data from production data and must support cleanly leaving demo mode at first real onboarding. A new firm signing up doesn't want the previous tenant's "Maple House" leaseholders showing in their dashboard — even with RLS preventing cross-firm reads, the operational reality of a single shared dev project means the data needs to be removable in one action when the deployment graduates from demo to production.
+
+**Decision (recorded as a forward-looking constraint; no code in this commit):**
+
+When the demo-mode toggle ships (likely Phase 6 or 7 depending on when the first real customer arrives), the design must support:
+
+1. **All seed / demo data lives under a clearly-marked "demo" firm.** The firm name carries a `(DEMO)` suffix or a dedicated `is_demo BOOLEAN` column. The current dev seed implicitly uses this pattern — there's a single firm and it's the demo one. The decision here is to make it explicit at the schema level rather than implicit by convention.
+2. **One-action exit-demo.** An admin button (under Settings → System) deletes the demo firm and cascades. The schema's existing FK structure already supports cascading deletes from `firms` via `ON DELETE CASCADE` (verify this is set on every per-firm table in a follow-up). Auth users belonging only to the demo firm are also removed; auth users on real firms are unaffected.
+3. **Pre-flight check.** Exiting demo mode is irreversible. The exit action requires typing the firm name and a checkbox confirming "I understand this deletes all demo data permanently." Same UX pattern as other destructive ops in the regulated-finance world.
+4. **Audit log entry on exit.** A single immutable audit-log row records who exited demo mode and when, even though everything else is gone. Useful for compliance.
+5. **Per-deployment, not per-firm.** A self-host deployment (Phase 8) starts in demo mode by default with the Size L data present; the operator exits demo on first real onboarding. A multi-tenant cloud deployment may have many firms and exiting demo only removes the demo firm specifically, leaving others untouched.
+
+**Why record now:** the Size S / M / L seed data work designed in this commit will dominate the demo data shape. Designing it from the start to live under one identifiable firm (rather than scattering rows across firms or ad-hoc into the system) makes exit-demo a one-line `DELETE FROM firms WHERE id = $1` rather than a cleanup hunt across 26 tables.
+
+**Out of scope until at least Phase 6** (Reporting / first-customer prep). This entry exists so the demo data work in 1f.5 / Size M / Size L stays compatible with the eventual exit path.
+
+---
+
 ## 2026-05-07 — pgAudit enablement approach
 
 **Context:** Section 4 requires pgAudit to be enabled before any data migration. The Supabase hosted project does not allow direct superuser SQL for extension creation on the free tier in some cases.
