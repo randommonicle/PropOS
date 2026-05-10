@@ -493,11 +493,92 @@ test.describe('Property detail — invoices tab', () => {
 
   // Smoke 16 — LIVE Edge Function pipeline. Skipped by default to avoid
   // Anthropic spend on every test run. Toggle skip locally when verifying
-  // full deploy of `document_processing`.
-  test.skip('LIVE — Edge Function pipeline extracts a sample invoice (manual run)', async () => {
-    // Pre-req: deploy document_processing via scripts/deploy-functions.bat
-    // and set ANTHROPIC_API_KEY via `supabase secrets set`. Then drop a
-    // sample invoice PDF at app/tests/fixtures/invoices/sample-invoice.pdf
-    // and remove the .skip marker on this test.
+  // full deploy of `document_processing` against a sample invoice PDF.
+  //
+  // Pre-req: deploy document_processing via scripts/deploy-functions.bat
+  // and set ANTHROPIC_API_KEY via `supabase secrets set`. Sample fixture at
+  // app/tests/fixtures/invoices/sample-invoice.pdf (synthetic invoice with
+  // Net £100, VAT £20, Gross £120, invoice_number ACME-2026-0817).
+  test('LIVE — Edge Function pipeline extracts a sample invoice (manual run)', async () => {
+    test.setTimeout(60_000)
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const fixturePath = path.join(import.meta.dirname, '..', 'fixtures', 'invoices', 'sample-invoice.pdf')
+    if (!fs.existsSync(fixturePath)) {
+      test.skip(true, `Fixture missing at ${fixturePath} — generate via the pdfkit script in DECISIONS 1i.2`)
+    }
+    const bytes = fs.readFileSync(fixturePath)
+
+    await signInAdmin()
+    const { data: prop } = await supabase
+      .from('properties').select('id, firm_id').limit(1).single()
+    if (!prop) throw new Error('No properties seeded')
+
+    // (a) Upload to Storage at firm-scoped path.
+    const filename = `${DOC_FILENAME_PREFIX}live-${Date.now()}.pdf`
+    const storagePath = `${prop.firm_id}/invoices/${filename}`
+    const { error: stoErr } = await supabase.storage
+      .from('documents').upload(storagePath, bytes, {
+        contentType: 'application/pdf',
+        upsert: false,
+      })
+    expect(stoErr).toBeNull()
+
+    // (b) Insert documents row.
+    const { data: doc, error: docErr } = await supabase.from('documents').insert({
+      firm_id:         prop.firm_id,
+      property_id:     prop.id,
+      document_type:   'invoice',
+      filename,
+      storage_path:    storagePath,
+      mime_type:       'application/pdf',
+      file_size_bytes: bytes.length,
+    }).select('id').single()
+    expect(docErr).toBeNull()
+    expect(doc).toBeTruthy()
+
+    // (c) Invoke the Edge Function — full pipeline (Anthropic call + DB writes).
+    const { data, error } = await supabase.functions.invoke('document_processing', {
+      body: { document_id: doc!.id },
+    })
+    if (error) {
+      let body = null
+      try { body = await error.context.json() } catch { /* ignore */ }
+      throw new Error(`Edge Function error: ${JSON.stringify(body) ?? error.message}`)
+    }
+    const result = data as {
+      ok: boolean; document_id: string; invoice_id: string; confidence: number;
+      extracted_data: Record<string, unknown>;
+    }
+    expect(result.ok).toBe(true)
+    expect(result.document_id).toBe(doc!.id)
+    expect(result.invoice_id).toBeTruthy()
+    expect(result.confidence).toBeGreaterThan(0)
+    expect(result.confidence).toBeLessThanOrEqual(1)
+
+    // (d) Verify documents row stamped + invoices row created with extracted fields.
+    const { data: refreshedDoc } = await supabase.from('documents')
+      .select('ai_processed_at, ai_extracted_data').eq('id', doc!.id).single()
+    expect(refreshedDoc?.ai_processed_at).toBeTruthy()
+    expect(refreshedDoc?.ai_extracted_data).toBeTruthy()
+
+    const { data: invoice } = await supabase.from('invoices')
+      .select('*').eq('id', result.invoice_id).single()
+    expect(invoice?.extracted_by_ai).toBe(true)
+    expect(invoice?.extraction_confidence).toBeGreaterThan(0)
+    expect(invoice?.status).toBe('received')
+    // Spot-check key extracted fields against the fixture content.
+    expect(invoice?.invoice_number ?? '').toMatch(/ACME-2026-0817/i)
+    expect(Number(invoice?.amount_gross)).toBeCloseTo(120, 2)
+    expect(Number(invoice?.amount_net)).toBeCloseTo(100, 2)
+    expect(Number(invoice?.vat_amount)).toBeCloseTo(20, 2)
+
+    // Cleanup: stamp the description with the smoke prefix so afterAll's
+    // sweep catches the row, and remove the Storage object explicitly (the
+    // afterAll sweep doesn't touch Storage).
+    await supabase.from('invoices')
+      .update({ description: `${INV_DESC_PREFIX} LIVE-${Date.now()}` })
+      .eq('id', result.invoice_id)
+    await supabase.storage.from('documents').remove([storagePath])
   })
 })
