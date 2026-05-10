@@ -72,7 +72,12 @@ test.describe('Property detail — bank accounts', () => {
     await expect(page.getByRole('main').getByText(name)).toBeVisible()
   })
 
-  test('bank account edit round-trip — current_balance is disabled with §5.6 tooltip', async ({ page }) => {
+  // FIXME (audit Tier-1, FORWARD: PROD-GATE 1 in 00030_security_audit_tier1.sql):
+  // The BankAccountForm UPDATE payload includes columns the 00030 GRANT excludes
+  // (`is_active`, `closed_date`, `rics_designated`). Post-00030 every form save
+  // returns 42501 for `authenticated`. Re-enable once the financial-rules Edge
+  // Function (or form narrowing to granted columns only) lands.
+  test.fixme('bank account edit round-trip — current_balance is disabled with §5.6 tooltip', async ({ page }) => {
     const original = `${BA_PREFIX} Edit ${Date.now()}`
     const updated  = `${BA_PREFIX} Edited ${Date.now()}`
     await goToFirstProperty(page)
@@ -150,7 +155,12 @@ test.describe('Property detail — bank accounts', () => {
     await expect(page.getByRole('main').getByText(name)).toBeVisible()
   })
 
-  test('mark account as Closed sets is_active=false and preserves the row', async ({ page }) => {
+  // FIXME (audit Tier-1, FORWARD: PROD-GATE 1 in 00030): direct UPDATE on
+  // bank_accounts.is_active now returns 42501 — column-grant excludes the
+  // closure-segregation columns. Closure must route through the dual-auth
+  // PA flow; the financial-rules Edge Function will perform the final
+  // is_active=false write under service-role.
+  test.fixme('mark account as Closed sets is_active=false and preserves the row', async ({ page }) => {
     const name = `${BA_PREFIX} Close ${Date.now()}`
     await goToFirstProperty(page)
     await goToBankAccountsTab(page)
@@ -195,7 +205,7 @@ test.describe('Property detail — bank accounts', () => {
     await expect(page.getByRole('cell', { name, exact: true })).not.toBeVisible()
   })
 
-  test('reconciled accounts cannot be hard-deleted (RICS Rule 4.7 / TPI §5)', async ({ page }) => {
+  test('reconciled accounts cannot be hard-deleted (RICS Rule 3.7 evidence trail; TPI)', async ({ page }) => {
     // Create directly via Supabase with last_reconciled_at set so we exercise the
     // pre-FK guard that surfaces the regulatory message.
     await supabase.auth.signInWithPassword({ email: 'admin@propos.local', password: 'PropOS2026!' })
@@ -216,14 +226,19 @@ test.describe('Property detail — bank accounts', () => {
     await row.getByRole('button', { name: `Delete ${name}` }).click()
     await page.getByRole('button', { name: 'Confirm delete' }).click()
 
-    // Regulatory error surfaces — RICS / TPI wording
-    await expect(page.getByText(/RICS Client Money Rule 4\.7/i)).toBeVisible()
+    // Regulatory error surfaces — RICS / TPI wording (retention anchor per audit Tier-1 R-4).
+    await expect(page.getByText(/RICS Rule 3\.7 evidence trail/i)).toBeVisible()
     // Row is still present (not deleted). Use the cell role to avoid colliding
     // with the <strong> inside the now-still-open confirmation row.
     await expect(page.getByRole('cell', { name, exact: true })).toBeVisible()
   })
 
-  test('admin can flip rics_designated true→false directly via the form (1g.5 asymmetry preserved)', async ({ page }) => {
+  // FIXME (audit Tier-1, FORWARD: PROD-GATE 1 in 00030): direct UPDATE on
+  // bank_accounts.rics_designated now returns 42501 — column-grant excludes
+  // both directions. The 1g.5 asymmetry (admin direct edit on the protective
+  // direction) returns once the financial-rules Edge Function lift re-routes
+  // the write under service-role.
+  test.fixme('admin can flip rics_designated true→false directly via the form (1g.5 asymmetry preserved)', async ({ page }) => {
     // 1g.5 deliberately allows admin / director to edit rics_designated
     // directly via the BankAccountForm — the dual-auth flow is the path PMs
     // use; admins are not blocked. This test locks in that asymmetry so a

@@ -22,7 +22,8 @@
  *      `notes` is editable. Mirrors the SCA finalised lock.
  *   3. Delete policy: hard-delete is permitted ONLY when status='draft' AND
  *      no `transactions` row references the demand (FK 23503 surfaces). The
- *      rejection message names RICS Rule 4.7 / TPI §5 / LTA s.20B audit chain.
+ *      rejection message names RICS Rule 3.7 evidence trail / TPI Consumer
+ *      Charter & Standards Edition 3 / LTA 1985 s.20B audit chain.
  *   4. On transition draft → issued, the form auto-stamps `issued_date = today`
  *      if the PM has not supplied one. The PM may override before save.
  */
@@ -121,13 +122,15 @@ export function DemandsTab({
 
     // Audit-history retention: only `draft` demands may be hard-deleted. Any later
     // status implies issuance to the leaseholder, which is the audit-trail event
-    // protected by RICS Rule 4.7, TPI §5, and the LTA s.20B 18-month chain.
+    // protected by RICS Rule 3.7 evidence trail, TPI Consumer Charter & Standards
+    // Edition 3, and the LTA 1985 s.20B 18-month chain.
     if (demand.status !== 'draft') {
       setDeleteErr(
-        `Cannot delete — status is "${demand.status}". Per RICS Client Money ` +
-        'Rule 4.7, TPI Code §5, and the LTA s.20B audit chain, only draft ' +
-        'demands may be hard-deleted. Issued / part-paid / paid / overdue / ' +
-        'disputed / withdrawn demands must be retained for audit.'
+        `Cannot delete — status is "${demand.status}". Per RICS Rule 3.7 ` +
+        'evidence trail, TPI Consumer Charter & Standards Edition 3, and LTA ' +
+        '1985 s.20B audit chain, only draft demands may be hard-deleted. ' +
+        'Issued / part-paid / paid / overdue / disputed / withdrawn demands ' +
+        'must be retained for audit.'
       )
       return
     }
@@ -138,8 +141,9 @@ export function DemandsTab({
       setDeleteErr(
         error.code === '23503'
           ? 'Cannot delete — this demand has linked transactions. Audit-history ' +
-            'retention requirements (RICS Rule 4.7 / TPI §5 / LTA s.20B) prevent ' +
-            'removal. Reassign the linked transactions first if appropriate.'
+            'retention requirements (RICS Rule 3.7 evidence trail; TPI Consumer ' +
+            'Charter & Standards Edition 3; LTA 1985 s.20B) prevent removal. ' +
+            'Reassign the linked transactions first if appropriate.'
           : error.message
       )
       return

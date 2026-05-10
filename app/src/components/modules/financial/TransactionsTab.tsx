@@ -25,8 +25,8 @@
  *      `requires_dual_auth=true` AND amount exceeding `dual_auth_threshold`
  *      no longer saves a transaction directly. Instead the form inserts a
  *      `payment_authorisations` row (status=pending) with the proposed
- *      transaction as a JSONB snapshot. A second user (admin or director, not
- *      the requester) authorises via the Payment authorisations tab; on
+ *      transaction as a JSONB snapshot. A second user (admin staff, not the
+ *      requester) authorises via the Payment authorisations tab; on
  *      authorise the transaction is created from the snapshot and the
  *      payment_authorisations row is linked. See PaymentAuthorisationsTab.
  *   4. Reconciled lock: `reconciled=true` rows open with all fields disabled
@@ -86,8 +86,9 @@ const TYPE_BADGE_VARIANT: Record<TransactionType, 'green' | 'amber' | 'secondary
 
 const RECONCILED_LOCK_TOOLTIP =
   'Reconciled transactions cannot be edited or deleted. Audit-history retention ' +
-  '(RICS Client Money Rule 4.7 / TPI §5) requires reconciled rows to remain. The ' +
-  'only path to undo a reconciliation is the bank reconciliation workflow.'
+  '(RICS Rule 3.7 evidence trail; TPI Consumer Charter & Standards Edition 3) ' +
+  'requires reconciled rows to remain. The only path to undo a reconciliation ' +
+  'is the bank reconciliation workflow.'
 
 const STATEMENT_IMPORT_LOCK_TOOLTIP =
   'This transaction was imported from a bank statement and is part of an upstream ' +
@@ -95,9 +96,10 @@ const STATEMENT_IMPORT_LOCK_TOOLTIP =
   'made via a corresponding journal transaction so the audit chain is preserved.'
 
 const DUAL_AUTH_REQUEST_CONFIRMATION =
-  'Payment authorisation request created. An admin or director (not the ' +
-  'requester) must authorise it before the transaction is recorded. View ' +
-  'and authorise under the Payment authorisations tab.'
+  'Payment authorisation request created. Admin staff (not the requester) ' +
+  'must authorise it before the transaction is recorded (RICS Client money ' +
+  'handling — segregation of duties). View and authorise under the Payment ' +
+  'authorisations tab.'
 
 export function TransactionsTab({
   firmId,
@@ -165,9 +167,10 @@ export function TransactionsTab({
     // Reconciled lock — even if the row UI hid the button, defence in depth.
     if (txn.reconciled) {
       setDeleteErr(
-        'Cannot delete — this transaction has been reconciled. Per RICS Client ' +
-        'Money Rule 4.7 and TPI Code §5, reconciled rows must be retained for ' +
-        'audit. Adjustments must be made via a journal transaction.'
+        'Cannot delete — this transaction has been reconciled. Per RICS Rule ' +
+        '3.7 evidence trail and TPI Consumer Charter & Standards Edition 3, ' +
+        'reconciled rows must be retained for audit. Adjustments must be made ' +
+        'via a journal transaction.'
       )
       return
     }

@@ -21,9 +21,10 @@
  *
  * Regulatory rules (DECISIONS 2026-05-10 — Payment Authorisations):
  *   1. Self-authorisation is BLOCKED. The authorising user MUST NOT be the
- *      requester. Surfaces an inline error citing RICS Client Money / TPI
- *      segregation of duties. Self-rejection (cancel-by-requester) IS
- *      permitted and is exposed as a separate "Cancel request" action.
+ *      requester. Surfaces an inline error citing RICS Client money handling
+ *      — segregation of duties (TPI Consumer Charter & Standards Edition 3).
+ *      Self-rejection (cancel-by-requester) IS permitted and is exposed as a
+ *      separate "Cancel request" action.
  *   2. Role guard. Only `admin` (staff) may authorise or reject. RMC
  *      directors / freeholder representatives — the `director` role — are
  *      CLIENT-side and explicitly excluded from staff finance gates per RICS
@@ -64,8 +65,9 @@ const STATUS_BADGE_VARIANT: Record<PaymentAuthStatus, 'amber' | 'green' | 'destr
 
 const SELF_AUTH_TOOLTIP =
   'Self-authorisation is not permitted. The authorising user must be different ' +
-  'from the requester (RICS Client Money rules / TPI Code §5 — segregation of ' +
-  'duties). Cancel the request instead if you no longer want to proceed.'
+  'from the requester (RICS Client money handling — segregation of duties; ' +
+  'TPI Consumer Charter & Standards Edition 3). Cancel the request instead if ' +
+  'you no longer want to proceed.'
 
 const ROLE_GATE_TOOLTIP =
   'Authorisation is restricted to admin staff. Property Managers and RMC ' +
@@ -443,7 +445,7 @@ export function PaymentAuthorisationsTab({
         {!canAuthorise && hasPmRole(roles) && (
           <span className="text-xs text-muted-foreground flex items-center gap-1">
             <Lock className="h-3 w-3" />
-            Authorisation actions are restricted to admin and director roles.
+            Authorisation actions are restricted to admin staff (RICS Client money handling — both signatories must be staff of the firm).
           </span>
         )}
       </div>

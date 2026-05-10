@@ -296,7 +296,7 @@ test.describe('Property detail — demands', () => {
     await expect(rowByUnitAndAmount(page, unit.unit_ref, 11)).toHaveCount(0)
   })
 
-  test('non-draft demand cannot be hard-deleted (RICS / TPI / s.20B)', async ({ page }) => {
+  test('non-draft demand cannot be hard-deleted (RICS Rule 3.7 evidence trail; TPI; LTA s.20B)', async ({ page }) => {
     const { prop, unit, lh } = await resolveSeedTriplet()
     const note = `${NOTES_PREFIX} FK ${Date.now()}`
 
@@ -313,8 +313,10 @@ test.describe('Property detail — demands', () => {
     await row.getByRole('button', { name: `Delete ${unit.unit_ref} service_charge demand` }).click()
     await page.getByRole('button', { name: 'Confirm delete' }).click()
 
-    // Status guard fires first; message names RICS Rule 4.7, TPI §5, and LTA s.20B.
-    await expect(page.getByText(/RICS Client Money Rule 4\.7/i)).toBeVisible()
+    // Status guard fires first; message names RICS Rule 3.7 evidence trail, TPI
+    // Consumer Charter & Standards Edition 3, and LTA 1985 s.20B (canonical
+    // anchors per audit Tier-1 R-3 / R-4).
+    await expect(page.getByText(/RICS Rule 3\.7 evidence trail/i)).toBeVisible()
     await expect(row).toBeVisible()
   })
 })

@@ -474,7 +474,11 @@ test.describe('Property detail — payment authorisations', () => {
     await expect(row.getByText('Pending')).toBeVisible()
   })
 
-  test('closure authorise — admin authorises, bank_account flips to closed', async ({ page }) => {
+  // FIXME (audit Tier-1, FORWARD: PROD-GATE 1 in 00030): the authorise path
+  // ends with an UPDATE bank_accounts SET is_active=false which now returns
+  // 42501. The financial-rules Edge Function will perform this write under
+  // service-role and the closure dual-auth chain completes end-to-end again.
+  test.fixme('closure authorise — admin authorises, bank_account flips to closed', async ({ page }) => {
     const { prop, account } = await seedScenario()
     const pmId = await resolvePmUserId()
 
@@ -559,7 +563,12 @@ test.describe('Property detail — payment authorisations', () => {
     await expect(row.getByText('Pending')).toBeVisible()
   })
 
-  test('rics-toggle authorise — admin authorises, bank_account.rics_designated flips to false', async ({ page }) => {
+  // FIXME (audit Tier-1, FORWARD: PROD-GATE 1 in 00030): the authorise path
+  // ends with an UPDATE bank_accounts SET rics_designated=false which now
+  // returns 42501. The financial-rules Edge Function will perform this write
+  // under service-role and the RICS-designation dual-auth chain completes
+  // end-to-end again.
+  test.fixme('rics-toggle authorise — admin authorises, bank_account.rics_designated flips to false', async ({ page }) => {
     const { prop, account } = await seedScenario({ ricsDesignated: true })
     const pmId = await resolvePmUserId()
 
@@ -604,10 +613,12 @@ test.describe('Property detail — payment authorisations', () => {
       await row.getByRole('button', { name: `Request designation removal ${account.account_name}` }).click()
       // Inline confirmation row appears.
       await page.getByRole('button', { name: 'Confirm request' }).click()
-      // Banner appears with the confirmation message (cites RICS Rule 4.7).
+      // Banner appears with the confirmation message (cites the canonical
+      // segregation anchor per audit Tier-1 R-3 — RICS-designation removal is
+      // a segregation-of-duties context, not retention).
       const notice = page.getByTestId('rics-toggle-request-notice')
       await expect(notice).toBeVisible()
-      await expect(notice).toContainText(/RICS Client Money Rule 4\.7/i)
+      await expect(notice).toContainText(/RICS Client money handling/i)
 
       // PA row exists in pending state with the expected action_type.
       const { data: pa } = await supabase

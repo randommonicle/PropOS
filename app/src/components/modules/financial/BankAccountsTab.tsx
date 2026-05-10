@@ -4,8 +4,9 @@
  * PropertyDetailPage's "Bank accounts" tab.
  *
  * Responsible for: full CRUD on `bank_accounts` rows scoped to a single property,
- *                  including FK-safe deletion guarded by RICS Client Money Rule 4.7
- *                  and TPI Code §5 audit-retention requirements; PM-facing
+ *                  including FK-safe deletion guarded by RICS Rule 3.7 evidence
+ *                  trail and TPI Consumer Charter & Standards Edition 3
+ *                  audit-retention requirements; PM-facing
  *                  dual-auth request flows for closure (1g) and RICS-designation
  *                  removal (1g.5).
  * NOT responsible for: reconciliation workflow, statement import (deferred Phase 3
@@ -120,20 +121,22 @@ export function BankAccountsTab({
       return
     }
 
-    // RICS Client Money Rule 4.7 + TPI §5: a reconciled or closed account must
-    // never be hard-deleted. The PM-facing path is Mark as Closed (is_active=false).
+    // RICS Rule 3.7 evidence trail + TPI Consumer Charter & Standards Edition 3:
+    // a reconciled or closed account must never be hard-deleted. The PM-facing
+    // path is Mark as Closed (is_active=false).
     if (account.last_reconciled_at) {
       setDeleteErr(
-        'Cannot delete — this account has been reconciled. Per RICS Client Money ' +
-        'Rule 4.7 and TPI Code §5, the audit trail must be preserved. Edit the ' +
-        'account and untick "Active" to mark it as closed instead.'
+        'Cannot delete — this account has been reconciled. Per RICS Rule 3.7 ' +
+        'evidence trail and TPI Consumer Charter & Standards Edition 3, the ' +
+        'audit trail must be preserved. Edit the account and untick "Active" ' +
+        'to mark it as closed instead.'
       )
       return
     }
     if (account.closed_date) {
       setDeleteErr(
         'Cannot delete — this account has been closed and the closure date is on record. ' +
-        'Closed-account history must be retained for audit (RICS Client Money Rule 4.7).'
+        'Closed-account history must be retained for audit (RICS Rule 3.7 evidence trail).'
       )
       return
     }
@@ -144,9 +147,9 @@ export function BankAccountsTab({
       setDeleteErr(
         error.code === '23503'
           ? 'Cannot delete — this account has linked transactions or payment ' +
-            'authorisations. Per RICS Client Money rules and TPI requirements, ' +
-            'financial audit history cannot be deleted. Edit the account and ' +
-            'untick "Active" to mark it as closed instead.'
+            'authorisations. Per RICS Rule 3.7 evidence trail and TPI Consumer ' +
+            'Charter & Standards Edition 3, financial audit history cannot be ' +
+            'deleted. Edit the account and untick "Active" to mark it as closed instead.'
           : error.message
       )
       return
@@ -177,9 +180,9 @@ export function BankAccountsTab({
     if (error) { setClosureErr(error.message); return }
     setRequestingClosureId(null)
     setClosureNotice(
-      `Closure request created for "${account.account_name}". An admin or ` +
-      'director must authorise it under Payment authorisations before the ' +
-      'account is marked closed.'
+      `Closure request created for "${account.account_name}". Admin staff ` +
+      '(not you) must authorise it under Payment authorisations before the ' +
+      'account is marked closed (RICS Client money handling — segregation of duties).'
     )
   }
 
@@ -188,8 +191,8 @@ export function BankAccountsTab({
    * to request that an admin / director authorise removing the RICS-designated
    * client-account flag. Direction-gated: only true→false flows through this
    * path (the protective false→true direction is a direct edit). On authorise
-   * the application updates bank_accounts.rics_designated. RICS Client Money
-   * Rule 4.7 — segregation of duties on a high-stakes designation change.
+   * the application updates bank_accounts.rics_designated. RICS Client money
+   * handling — segregation of duties on a high-stakes designation change.
    * See DECISIONS 2026-05-10 1g.5.
    */
   async function handleRequestRicsToggle(account: BankAccount) {
@@ -209,8 +212,9 @@ export function BankAccountsTab({
     setRequestingRicsToggleId(null)
     setRicsToggleNotice(
       `RICS-designation removal request created for "${account.account_name}". ` +
-      'An admin or director must authorise it under Payment authorisations ' +
-      'before the designation is removed (RICS Client Money Rule 4.7).'
+      'Admin staff (not you) must authorise it under Payment authorisations ' +
+      'before the designation is removed (RICS Client money handling — ' +
+      'segregation of duties).'
     )
   }
 
@@ -416,7 +420,7 @@ function BankAccountRow({
                 className="text-amber-700 hover:text-amber-800"
                 onClick={onAskRequestClosure}
                 aria-label={`Request closure ${account.account_name}`}
-                title="Request closure — an admin or director must authorise it"
+                title="Request closure — admin staff must authorise it (RICS Client money handling — segregation of duties)"
               >
                 <Send className="h-3.5 w-3.5" />
               </Button>
@@ -427,7 +431,7 @@ function BankAccountRow({
                 className="text-amber-700 hover:text-amber-800"
                 onClick={onAskRequestRicsToggle}
                 aria-label={`Request designation removal ${account.account_name}`}
-                title="Request RICS-designation removal — an admin or director must authorise it (RICS Client Money Rule 4.7)"
+                title="Request RICS-designation removal — admin staff must authorise it (RICS Client money handling — segregation of duties)"
               >
                 <ShieldOff className="h-3.5 w-3.5" />
               </Button>
@@ -452,8 +456,8 @@ function BankAccountRow({
               <Send className="h-4 w-4 text-amber-700 flex-shrink-0" />
               <span>
                 Request closure of <strong>{account.account_name}</strong>?
-                An admin or director (not you) must authorise it before the
-                account is marked closed.
+                Admin staff (not you) must authorise it before the account is
+                marked closed (RICS Client money handling — segregation of duties).
               </span>
               <Button size="sm" onClick={onConfirmRequestClosure}>
                 Confirm request
@@ -472,9 +476,9 @@ function BankAccountRow({
               <ShieldOff className="h-4 w-4 text-amber-700 flex-shrink-0" />
               <span>
                 Remove RICS-designated client-account flag on{' '}
-                <strong>{account.account_name}</strong>? Per RICS Client Money
-                Rule 4.7 this is segregated — an admin or director (not you)
-                must authorise it.
+                <strong>{account.account_name}</strong>? Per RICS Client money
+                handling — segregation of duties, admin staff (not you) must
+                authorise it.
               </span>
               <Button size="sm" onClick={onConfirmRequestRicsToggle}>
                 Confirm request

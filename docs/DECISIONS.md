@@ -5,6 +5,41 @@ Spec reference: PropOS Handoff Document v1.1 — Section 6.2.
 
 ---
 
+## 2026-05-10 — Cross-phase audit Tier-1 sweep (commit 1i.4 — post-Phase-3, pre-Phase-4)
+
+**Context:** `docs/AUDIT_2026-05-10.md` surfaced 31 findings across the lexical-consistency dimension after 1i.3 wrapped Phase 3. 3 CRITICAL + 9 Tier-1 + 11 Tier-2 + 8 Tier-3. The 3 CRITICAL findings (A-1 / A-2 / A-3) form one attack chain: 1i.3's widening of `is_pm_or_admin()` to include `accounts` + `senior_pm` cascaded through the RLS write policies on `payment_authorisations` / `contractors` / `bank_accounts`, but the segregation gates (self-auth, payee-setter ≠ release-authoriser, closure dual-auth) were enforced application-side only. The Tier-1 cluster is statutory-citation drift carried over from 1d / 1e / 1g.5 era code on the deprecated "RICS Client Money Rule 4.7" framing. Two non-atomic flows (B-3, B-5) carried regulatory load. The audit was deliberately written as docs-only so it could land independently of either commit; PR #1 carried the audit + 1i.3 + Handoff v1.7 onto a feature branch and the Tier-1 sweep landed stacked on top as a two-commit decomposition (1i.4 = commit 1 security + commit 2 UI/citation/B-5 wrap). Plan-first signed off via the handover doc (`docs/HANDOVER_audit_tier1.md`).
+
+**Decision (two commits):**
+
+1. **Commit 1 — `00030_security_audit_tier1.sql` + 3 RLS smokes.** Closes A-1 (self-auth WITH CHECK predicate on `payment_auth_update`), A-2 (column-grant REVOKE+GRANT on `contractors`), A-3 (column-grant REVOKE+GRANT on `bank_accounts`). Two corrective edits from the audit's literal SQL caught during smoke development: (a) self-auth predicate refined to gate only the authorisation moment (`status != 'authorised' OR auth.uid() IS DISTINCT FROM requested_by`) — the audit's flat `requested_by IS DISTINCT FROM auth.uid()` over-blocked cancel-by-requester, caught by the existing C-3 smoke; (b) `current_balance` AND `updated_at` granted on `bank_accounts` despite belonging to the "trigger-maintained" defensive set — both are required by the `sync_bank_account_balance` AFTER-INSERT trigger on transactions (separate UPDATE statement, SECURITY INVOKER, hits caller's column-level grant). Defence-in-depth on `current_balance` is the 00026+00027 M-1 `block_balance_writes` trigger (pg_trigger_depth-aware). 3 new smokes (C-1-new / C-2-new / C-3-new) in `security-rls.spec.ts` verify direct supabase-js rejection with code 42501. Full file at 20/20 green.
+
+2. **Commit 2 — citation canonicalisation + B-5 try/catch + 5 deferred-flow .fixme.** Closes R-1 / R-2 (line-446 "admin and director" → "admin staff" propagation gap; 6 BankAccountsTab sites), R-3 (~14 sites across BankAccountsTab / DemandsTab / TransactionsTab / ServiceChargeAccountsTab / PaymentAuthorisationsTab: "RICS Client Money Rule 4.7" → canonical anchor key), R-4 (retention citations re-anchored to "RICS Rule 3.7 evidence trail; TPI Consumer Charter & Standards Edition 3" — Rule 4.7 was segregation, not retention; InvoicesTab line 216 re-anchored), R-5 / R-6 (00028 placeholder + stale PROD-GATE 8 + 9 — supersession documented here per append-only rule, not edited in 00028), B-5 (ReconciliationCompleteModal: audit-log write wrapped in dedicated try/catch with manual-repair SQL hint on failure — RICS Rule 3.7 evidence trail load-bearing). 4 smoke specs updated in lockstep with the UI string changes. B-3 (payee-setup half-state) closed structurally by 00030 — the contractor stamp itself now returns 42501 from `authenticated`, so the half-state attack vector can't arise; no code change needed.
+
+**Citation anchor key established** (governs all future UI / spec / migration audit-comment statutory references):
+
+- **Segregation / dual-auth / signatory contexts** → `RICS Client money handling — segregation of duties` (full form: `RICS Client money handling (1st ed., Oct 2022 reissue) — segregation of duties; both signatories must be staff of the firm`). Lowercase "money" — the 1d era's "Client Money" as proper noun was incorrect.
+- **Retention / hard-delete prohibition / reconciled-row lock contexts** → `RICS Rule 3.7 evidence trail; TPI Consumer Charter & Standards Edition 3`. The 1st-edition RICS Client money handling document carries no stable §-numbers — the legacy `§X.X` placeholder in 00028 line 111 was a drafting artefact, not a deferred resolution.
+- **Role naming** → "admin staff" (not "admin and director", not "admin or director"). RMC directors / freeholder representatives are client-side per the 1i.2 director-exclusion; the legacy phrasing was misleading.
+
+**Known consequential breakage (PoC-acceptable, all FORWARD: PROD-GATE 1-flagged in 00030):**
+
+- `ContractorsPage.handleSubmit:437` bank-detail edit "flip approved=false to force re-approval" → 42501.
+- `BankAccountsTab` closure-flow tail-write `is_active=false` → 42501. Closure dual-auth chain ends with rejection.
+- `BankAccountsTab` RICS-designation tail-write `rics_designated=false` → 42501. Same for the direct-edit flow in the protective direction.
+- 5 smoke tests marked `.fixme()` with FORWARD anchors pointing to the financial-rules Edge Function: `bank-accounts.spec.ts:75/153/226`, `payment-authorisations.spec.ts:477/562`. Re-enable when the Edge Function lift performs the segregation columns' writes under service-role.
+
+**FORWARD anchors planted by 00030 (5 total):**
+
+1. Financial-rules Edge Function — server-side segregation gate (re-enables the 5 fixmes + the bank-detail-edit re-approval flow).
+2. Re-enable bank-detail edit "force re-approval" under service-role.
+3. Encrypted contractor bank-detail columns (drops the `contractors.notes` JSON stash).
+4. 00028 PROD-GATE 8 + 9 stale annotation supersession (this doc + 00029 preamble pointer).
+5. 00028 §X.X placeholder note (this doc).
+
+**Rationale.** Land the regulatory-load-bearing fix (commit 1) on origin BEFORE the citation sweep (commit 2) so a citation-sweep error has the safety net of the WITH CHECK + column-grant already in place. The audit's predicate over-reach (A-1's flat `IS DISTINCT FROM`) was caught by the existing C-3 smoke during commit-1 smoke development, proving the value of running the full security-rls suite (not just the new 3 smokes) immediately after migration apply. The lesson there is generalisable: any RLS predicate refinement should run the full suite covering that table, not just the new smokes for the new predicate — predicate over-reach surfaces as a regression in existing tests that the refinement was supposed to preserve. The `current_balance` / `updated_at` over-exclusion was caught the same way (transaction INSERT failing during C-1-new fixture seed). Both corrections went in during commit-1 development; committed shape matches the live DB.
+
+---
+
 ## 2026-05-10 — Role architecture rework + multi-role + function-split (commit 1i.3 — Phase 3 → 4 boundary)
 
 **Context:** 1i.2 shipped Phase 3 §7 (invoices) on a PoC stand-in for the role architecture: `FINANCE_ROLES = ['admin']` only (regulatory-acceptable but architecturally incomplete). 11 `FORWARD: PROD-GATE` flags planted across `00028_invoices_status_chk.sql` queued the lift; flags 8 (function-split discriminator) and 9 (contractor-onboarding payee-stamping) close here, plus the wider role-architecture rework. The plan-first gate signed off three scope decisions before code (handover doc `docs/HANDOVER_1i3.md`):
