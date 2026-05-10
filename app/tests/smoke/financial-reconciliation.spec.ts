@@ -29,8 +29,14 @@
  *
  * 1h.3 coverage:
  *  13. Completion blocked when unreconciled transactions remain in period.
- *  14. Completion blocked with >£0.01 balance discrepancy (smoke injects
- *      corrupted current_balance via direct UPDATE — bypassing the trigger).
+ *  14. RETIRED in commit 1i.1 — Tier-1 hardening §M-1 added a BEFORE-UPDATE
+ *      trigger on bank_accounts.current_balance (00026_security_hardening.sql)
+ *      that blocks the direct UPDATE this smoke used to inject divergence.
+ *      The £0.01 gate is now belt-and-braces: the trigger guarantees
+ *      current_balance = SUM(transactions.amount) under every user-reachable
+ *      path. The trigger itself is exercised by security-rls.spec.ts smoke 10
+ *      ('M-1 — direct UPDATE on bank_accounts.current_balance is blocked by
+ *      trigger'). The gate component logic is left in place defensively.
  *  15. Completion succeeds with no suspense — last_reconciled_at stamped,
  *      period marked completed, audit row written, import status complete.
  *  16. Completion with open suspense in period requires completion_notes —
@@ -46,13 +52,9 @@
  */
 import { test, expect, type Page } from '@playwright/test'
 import { createClient } from '@supabase/supabase-js'
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from './_env'
 
-// NOTE: §6.5 hygiene fix (drop the publishable-key fallback below) is tracked as
-// a separate follow-up commit so this file mirrors the existing smoke pattern.
-const supabase = createClient(
-  process.env.VITE_SUPABASE_URL ?? 'https://tmngfuonanizxyffrsjy.supabase.co',
-  process.env.VITE_SUPABASE_ANON_KEY ?? 'sb_publishable_M_cBRZKdJtIunGAUFBhD1g_SYMADNyT',
-)
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 const BA_PREFIX  = 'Smoke RECON BA'
 const TXN_PREFIX = 'Smoke RECON TXN'
@@ -690,39 +692,16 @@ test.describe('Property detail — reconciliation', () => {
     expect(per!.status).toBe('open')
   })
 
-  test('Completion blocked with >£0.01 balance discrepancy (corrupted current_balance)', async ({ page }) => {
-    const { prop, account } = await seedAccount()
-    // Seed a reconciled transaction so the unreconciled-count check passes.
-    const { error: txnInsertErr, data: txn } = await supabase.from('transactions').insert({
-      firm_id: prop.firm_id, property_id: prop.id, bank_account_id: account.id,
-      transaction_type: 'receipt', transaction_date: '2026-04-15',
-      amount: 250.00,
-      description: `${TXN_PREFIX} balance-check txn`,
-      reconciled: true, reconciled_at: new Date().toISOString(),
-    }).select('id').single()
-    if (txnInsertErr || !txn) throw new Error(txnInsertErr?.message)
-
-    // Inject a balance divergence via direct UPDATE — the trigger only fires
-    // on transactions changes, so a direct UPDATE on bank_accounts is allowed
-    // and creates the divergence the £0.01 gate is designed to catch.
-    const { error: corruptErr } = await supabase
-      .from('bank_accounts').update({ current_balance: 251.00 }).eq('id', account.id)
-    if (corruptErr) throw new Error(corruptErr.message)
-
-    await seedMatchedPeriod(prop, account.id, [
-      { index: 0, date: '2026-04-15', amountP: 25000, description: 'Smoke 14 stmt row' },
-    ])
-
-    await openCompleteModal(page, prop.id, account.id)
-    await expect(page.getByTestId('pf-balance')).toHaveAttribute('data-ok', 'false')
-    await expect(page.getByTestId('pf-balance')).toContainText(/Discrepancy of £1\.00/)
-    await expect(page.getByTestId('pf-balance')).toContainText(/Spec §5\.3 blocks completion/)
-    await expect(page.getByTestId('complete-submit')).toBeDisabled()
-
-    const { data: per } = await supabase
-      .from('reconciliation_periods').select('status').eq('bank_account_id', account.id).single()
-    expect(per!.status).toBe('open')
-  })
+  // Smoke 14 RETIRED — see file header. Tier-1 hardening (00026 §M-1) added a
+  // BEFORE-UPDATE trigger on bank_accounts.current_balance that blocks the
+  // direct UPDATE this smoke used to inject divergence. The trigger itself is
+  // covered by security-rls.spec.ts smoke 10 ('M-1 — direct UPDATE on
+  // bank_accounts.current_balance is blocked by trigger'). Removing the test
+  // here rather than rewriting it: the £0.01 gate is now belt-and-braces, and
+  // a unit test of the pre-flight check function would cover the gate logic
+  // more cheaply than a smoke. FORWARD: PROD-GATE — when the financial-rules
+  // Edge Function lands, revisit whether the gate's pre-flight check warrants
+  // its own smoke against an Edge-Function-injected divergence path.
 
   test('Completion succeeds with no suspense — period completed + audit row + last_reconciled_at', async ({ page }) => {
     const { prop, account } = await seedAccount()

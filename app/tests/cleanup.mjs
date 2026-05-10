@@ -7,10 +7,18 @@
  */
 import { createClient } from '@supabase/supabase-js'
 
-const supabase = createClient(
-  'https://tmngfuonanizxyffrsjy.supabase.co',
-  'sb_publishable_M_cBRZKdJtIunGAUFBhD1g_SYMADNyT',
-)
+// Tier-1 security hardening (commit 1i.1 / SECURITY_AUDIT §H-6) — read from env
+// instead of embedding the publishable key + URL in source. See tests/smoke/_env.ts
+// for the equivalent helper used by the spec files.
+const SUPABASE_URL      = process.env.VITE_SUPABASE_URL
+const SUPABASE_ANON_KEY = process.env.VITE_SUPABASE_ANON_KEY
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+  throw new Error(
+    'Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY. ' +
+    'Copy app/.env.local from the main repo or set them in your shell.'
+  )
+}
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 await supabase.auth.signInWithPassword({
   email: 'admin@propos.local',

@@ -4,6 +4,34 @@
 
 ---
 
+## Status update — Tier-1 hardening landed (commit 1i.1, 2026-05-10)
+
+The audit's §5 Tier-1 fix bundle landed in commit 1i.1. **3 of 4 critical findings closed; 12 findings total closed; 1 critical (C-4) remains open and explicitly Tier-2.** Single migration `00026_security_hardening.sql` plus fixup `00027_fix_m1_trigger_recursion.sql` carried the DB-layer work; app-side `app/src/hooks/useAuth.ts` carried H-7; `supabase/config.toml` carried H-1 + H-3; smoke spec sweep across 11 files plus new `app/tests/smoke/security-rls.spec.ts` (12 smokes) carried H-6 + the Security-smoke pass scope. **119/119 smokes passing post-1i.1.** See `docs/DECISIONS.md` 2026-05-10 — Tier-1 security hardening (commit 1i.1) for the full landing record.
+
+| ID | Severity | Status post-1i.1 | Notes |
+|---|---|---|---|
+| **C-1** | CRITICAL | ✅ Fixed | Column-grant restriction + `WITH CHECK (id = auth.uid())` on `users_update_self`. Smokes 1–3 in `security-rls.spec.ts`. |
+| **C-2** | CRITICAL | ✅ Fixed | `WITH CHECK` clauses added to all 30 `FOR ALL USING` policies in 00012 + 00025. Smokes 4–6. |
+| **C-3** | CRITICAL | ✅ Fixed | `reconciliation_audit_log` + `golden_thread_audit_log` → SELECT + INSERT only. `dispatch_log` + `payment_authorisations` → SELECT + INSERT + UPDATE (no DELETE). Smokes 7–8. |
+| **C-4** | CRITICAL | 🟡 Open — Tier-2 | Storage RLS for `documents.is_confidential`. FORWARD: PROD-GATE anchor planted at bottom of `00026_*.sql` and `00017_storage_rls.sql`. Lands with Phase 5 leaseholder-portal commit. Promotes to active CRITICAL the moment Phase 5 ships. |
+| **H-1** | HIGH | ✅ Fixed | `enable_signup = false` + `enable_confirmations = true` in `supabase/config.toml`. **Dashboard sibling toggle MUST be flipped OFF for the live project** — `config.toml` only governs the local CLI shadow. |
+| **H-2** | HIGH | ✅ Fixed | `pm_messages_self` rewritten with `firm_id` predicate. |
+| **H-3** | HIGH | ✅ Fixed | `jwt_expiry = 600` (10-min post-revocation window, was 3600). |
+| **H-4** | HIGH | ✅ Fixed | `is_current = true` filter added to all 4 leaseholder-scoped subselects. |
+| **H-5** | HIGH | 🟡 Open — Tier-3 | pgAudit log config doc. Phase 8 self-host package. |
+| **H-6** | HIGH | ✅ Fixed | Publishable-key fallback dropped from 11 spec files + `cleanup.mjs`. New `_env.ts` `requireEnv` helper fails at module load. |
+| **H-7** | HIGH | ✅ Fixed | `useAuth.ts` `loadFirmContext` now reads `firm_id` + `user_role` from JWT claims, not `public.users`. |
+| **M-1** | MEDIUM | ✅ Fixed | `block_balance_writes()` BEFORE-UPDATE trigger with `pg_trigger_depth() = 1` recursion guard (00027). Smoke 10. |
+| **M-3** | MEDIUM | ✅ Fixed | `transactions_sign_type_chk` CHECK constraint. Smoke 11. |
+| **M-4** | MEDIUM | ✅ Fixed | `pa_authorised_pair_chk` + `pa_rejected_triple_chk` CHECK constraints. Smoke 12. |
+| M-2, M-5, M-6, M-12, M-13 | MEDIUM | 🟡 Open — Tier-4 | Data-integrity / auto-protect pass commit. |
+| M-7, M-8, M-9, M-10, M-11 | MEDIUM | 🟡 Open | Various tiers per §5. |
+| L-1 … L-9 | LOW | 🟡 Open | Per §5 phasing. |
+
+**Findings inserted into existing forward entries by audit §6** are now formally landed in those entries via the 1i.1 DECISIONS entry rather than re-derived per finding. The Security-smoke pass scope's 3 audit-added items (C-1 mutation, C-2 firm_id transfer, C-3 audit-log DELETE) are all green smokes. The Data-integrity pass scope's 5 audit-added items: M-3 closed; M-2 / M-6 / M-12 / M-13 / L-3 / C-4-coherence remain in that pass's scope.
+
+---
+
 ## Executive summary
 
 **Findings:** 38 total. **Critical: 4 · High: 7 · Medium: 13 · Low: 9 · Info / confirmations: 5.**

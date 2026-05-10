@@ -18,13 +18,9 @@
  */
 import { test, expect, type Page } from '@playwright/test'
 import { createClient } from '@supabase/supabase-js'
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from './_env'
 
-// NOTE: §6.5 hygiene fix (drop the publishable-key fallback below) is tracked as a
-// separate follow-up commit so this file mirrors the existing smoke pattern.
-const supabase = createClient(
-  process.env.VITE_SUPABASE_URL ?? 'https://tmngfuonanizxyffrsjy.supabase.co',
-  process.env.VITE_SUPABASE_ANON_KEY ?? 'sb_publishable_M_cBRZKdJtIunGAUFBhD1g_SYMADNyT',
-)
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 const TXN_PREFIX = 'Smoke PAUTH'
 const BA_PREFIX  = 'Smoke PAUTH BA'

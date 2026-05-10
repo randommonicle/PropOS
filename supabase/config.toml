@@ -28,13 +28,20 @@ enabled = true
 enabled = true
 site_url = "http://localhost:5173"
 additional_redirect_urls = ["http://localhost:5173"]
-jwt_expiry = 3600
-enable_signup = true
+# Tier-1 security hardening (commit 1i.1 / SECURITY_AUDIT §H-3):
+# 600s = 10-minute post-revocation window for offboarded users (was 3600).
+jwt_expiry = 600
+# Tier-1 security hardening (commit 1i.1 / SECURITY_AUDIT §H-1):
+# Admin-driven user creation only (DECISIONS 2026-05-10 — Test users seed pattern).
+# The Dashboard sibling toggle (Auth → Providers → Email → Allow new users to sign up)
+# MUST also be flipped OFF for the live project; config.toml only governs the local
+# supabase CLI shadow.
+enable_signup = false
 
 [auth.email]
-enable_signup = true
+enable_signup = false
 double_confirm_changes = true
-enable_confirmations = false
+enable_confirmations = true
 
 [analytics]
 enabled = false

@@ -7,11 +7,9 @@
  */
 import { test, expect } from '@playwright/test'
 import { createClient } from '@supabase/supabase-js'
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from './_env'
 
-const supabase = createClient(
-  process.env.VITE_SUPABASE_URL ?? 'https://tmngfuonanizxyffrsjy.supabase.co',
-  process.env.VITE_SUPABASE_ANON_KEY ?? 'sb_publishable_M_cBRZKdJtIunGAUFBhD1g_SYMADNyT',
-)
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 test.describe('Compliance page', () => {
   test.afterAll(async () => {
