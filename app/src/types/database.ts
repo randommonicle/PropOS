@@ -194,8 +194,8 @@ export interface Database {
           total_units: number | null
           build_year: number | null
           listed_status: string | null
-          freeholder_name: string | null
-          freeholder_contact: string | null
+          landlord_id: string
+          management_company_id: string | null
           managing_since: string | null
           assigned_pm_id: string | null
           legacy_ref: string | null
@@ -218,8 +218,8 @@ export interface Database {
           total_units?: number | null
           build_year?: number | null
           listed_status?: string | null
-          freeholder_name?: string | null
-          freeholder_contact?: string | null
+          landlord_id: string
+          management_company_id?: string | null
           managing_since?: string | null
           assigned_pm_id?: string | null
           legacy_ref?: string | null
@@ -241,11 +241,6 @@ export interface Database {
           unit_ref: string
           floor: number | null
           unit_type: string
-          lease_start: string | null
-          lease_end: string | null
-          lease_term_years: number | null
-          ground_rent_pa: number | null
-          ground_rent_review_date: string | null
           ground_rent_review_basis: string | null
           is_share_of_freehold: boolean
           is_currently_let: boolean
@@ -260,11 +255,6 @@ export interface Database {
           unit_ref: string
           floor?: number | null
           unit_type?: string
-          lease_start?: string | null
-          lease_end?: string | null
-          lease_term_years?: number | null
-          ground_rent_pa?: number | null
-          ground_rent_review_date?: string | null
           ground_rent_review_basis?: string | null
           is_share_of_freehold?: boolean
           is_currently_let?: boolean

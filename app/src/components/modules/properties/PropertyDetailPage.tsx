@@ -22,7 +22,13 @@
  *   - Leaseholder end: sets is_current=false + to_date=today; preserves record for audit trail
  *   - Company leaseholder: conditional company_name / company_reg fields
  *   - Historical leaseholders: hidden by default, shown via toggle
- *   - Ground rent review: basis + date only shown when ground_rent_pa is set
+ *
+ * NOTE — Lease + ground rent + freeholder fields were stripped in migration 00033's
+ * strip-only UI patch (the 7 legacy columns on units / properties were dropped).
+ * The replacement UI (read from unit_leases for lease/GR detail; from
+ * properties.landlord_id → landlords.name for the freeholder line) lands in a
+ * dedicated UI commit. Until then the Units table shows identity + type + floor +
+ * flags only, and the Overview card omits the freeholder field.
  */
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, Link, useSearchParams } from 'react-router-dom'
@@ -35,7 +41,6 @@ import {
 } from '@/components/ui'
 import { ChevronLeft, Plus, Pencil, Trash2, X, AlertTriangle } from 'lucide-react'
 import { cn, formatDate, todayISODate } from '@/lib/utils'
-import { formatPounds } from '@/lib/money'
 import {
   BankAccountsTab, ServiceChargeAccountsTab, DemandsTab, TransactionsTab,
   PaymentAuthorisationsTab, ReconciliationTab, InvoicesTab,
@@ -53,15 +58,6 @@ const SELECT_CLASS = 'flex h-10 w-full rounded-md border border-input bg-backgro
 const TAB_VALUES = ['overview', 'units', 'leaseholders', 'bank-accounts', 'service-charge-accounts', 'demands', 'transactions', 'payment-authorisations', 'reconciliation', 'invoices'] as const
 type TabValue = typeof TAB_VALUES[number]
 const DEFAULT_TAB: TabValue = 'overview'
-
-/** Ground rent review basis options per the schema */
-const GROUND_RENT_REVIEW_OPTIONS = [
-  { value: '',            label: 'Not specified' },
-  { value: 'fixed',       label: 'Fixed' },
-  { value: 'rpi',         label: 'RPI' },
-  { value: 'doubling',    label: 'Doubling' },
-  { value: 'review_only', label: 'Review only' },
-]
 
 // ════════════════════════════════════════════════════════════════════════════
 // PropertyDetailPage — root
@@ -208,7 +204,6 @@ export function PropertyDetailPage() {
                   <Field label="Total units"   value={property.total_units?.toString() ?? '—'} />
                   <Field label="Build year"    value={property.build_year?.toString() ?? '—'} />
                   <Field label="Listed status" value={property.listed_status ?? '—'} />
-                  <Field label="Freeholder"    value={property.freeholder_name ?? '—'} />
                   <Field label="Managing since" value={formatDate(property.managing_since)} />
                   <Field label="HRB"           value={property.is_hrb ? 'Yes — BSA applies' : 'No'} />
                   {property.is_hrb && <Field label="Storeys"    value={property.storey_count?.toString() ?? '—'} />}
@@ -249,8 +244,6 @@ export function PropertyDetailPage() {
                   <th className="text-left px-4 py-2 font-medium">Unit ref</th>
                   <th className="text-left px-4 py-2 font-medium">Type</th>
                   <th className="text-left px-4 py-2 font-medium">Floor</th>
-                  <th className="text-left px-4 py-2 font-medium">Ground rent</th>
-                  <th className="text-left px-4 py-2 font-medium">Lease end</th>
                   <th className="text-left px-4 py-2 font-medium">SoF</th>
                   <th className="text-left px-4 py-2 font-medium">Let</th>
                   <th className="px-4 py-2" />
@@ -259,7 +252,7 @@ export function PropertyDetailPage() {
               <tbody>
                 {units.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">
+                    <td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">
                       No units added yet.
                     </td>
                   </tr>
@@ -270,10 +263,6 @@ export function PropertyDetailPage() {
                         <td className="px-4 py-2 font-medium">{unit.unit_ref}</td>
                         <td className="px-4 py-2 capitalize">{unit.unit_type}</td>
                         <td className="px-4 py-2">{unit.floor ?? '—'}</td>
-                        <td className="px-4 py-2">
-                          {unit.ground_rent_pa ? formatPounds(unit.ground_rent_pa) + '/yr' : '—'}
-                        </td>
-                        <td className="px-4 py-2">{formatDate(unit.lease_end)}</td>
                         <td className="px-4 py-2">
                           <Badge variant={unit.is_share_of_freehold ? 'green' : 'secondary'}>
                             {unit.is_share_of_freehold ? 'Yes' : 'No'}
@@ -593,12 +582,6 @@ function UnitForm({ firmId, propertyId, initial, onSaved, onCancel }: {
     unit_ref:                 initial?.unit_ref ?? '',
     unit_type:                initial?.unit_type ?? 'flat',
     floor:                    initial?.floor != null ? String(initial.floor) : '',
-    lease_start:              initial?.lease_start ?? '',
-    lease_end:                initial?.lease_end ?? '',
-    lease_term_years:         initial?.lease_term_years != null ? String(initial.lease_term_years) : '',
-    ground_rent_pa:           initial?.ground_rent_pa != null ? String(initial.ground_rent_pa) : '',
-    ground_rent_review_date:  initial?.ground_rent_review_date ?? '',
-    ground_rent_review_basis: initial?.ground_rent_review_basis ?? '',
     is_share_of_freehold:     initial?.is_share_of_freehold ?? false,
     is_currently_let:         initial?.is_currently_let ?? false,
     notes:                    initial?.notes ?? '',
@@ -621,12 +604,6 @@ function UnitForm({ firmId, propertyId, initial, onSaved, onCancel }: {
       unit_ref:                 values.unit_ref,
       unit_type:                values.unit_type,
       floor:                    values.floor ? parseInt(values.floor, 10) : null,
-      lease_start:              values.lease_start || null,
-      lease_end:                values.lease_end || null,
-      lease_term_years:         values.lease_term_years ? parseInt(values.lease_term_years, 10) : null,
-      ground_rent_pa:           values.ground_rent_pa ? parseFloat(values.ground_rent_pa) : null,
-      ground_rent_review_date:  values.ground_rent_review_date || null,
-      ground_rent_review_basis: values.ground_rent_review_basis || null,
       is_share_of_freehold:     values.is_share_of_freehold,
       is_currently_let:         values.is_currently_let,
       notes:                    values.notes || null,
@@ -689,71 +666,8 @@ function UnitForm({ firmId, propertyId, initial, onSaved, onCancel }: {
               onChange={e => set('floor', e.target.value)}
             />
           </div>
-          {/* Lease */}
-          <div className="space-y-1">
-            <label htmlFor="unit-term" className="text-sm font-medium">Lease term (years)</label>
-            <Input
-              id="unit-term"
-              type="number"
-              min="0"
-              placeholder="125"
-              value={values.lease_term_years}
-              onChange={e => set('lease_term_years', e.target.value)}
-            />
-          </div>
-          <div className="space-y-1">
-            <label htmlFor="unit-lease-start" className="text-sm font-medium">Lease start</label>
-            <Input
-              id="unit-lease-start"
-              type="date"
-              value={values.lease_start}
-              onChange={e => set('lease_start', e.target.value)}
-            />
-          </div>
-          <div className="space-y-1">
-            <label htmlFor="unit-lease-end" className="text-sm font-medium">Lease end</label>
-            <Input
-              id="unit-lease-end"
-              type="date"
-              value={values.lease_end}
-              onChange={e => set('lease_end', e.target.value)}
-            />
-          </div>
-          {/* Ground rent */}
-          <div className="space-y-1">
-            <label htmlFor="unit-gr-pa" className="text-sm font-medium">Ground rent (£/yr)</label>
-            <Input
-              id="unit-gr-pa"
-              type="number"
-              min="0"
-              step="0.01"
-              placeholder="0.00"
-              value={values.ground_rent_pa}
-              onChange={e => set('ground_rent_pa', e.target.value)}
-            />
-          </div>
-          <div className="space-y-1">
-            <label htmlFor="unit-gr-basis" className="text-sm font-medium">Ground rent review basis</label>
-            <select
-              id="unit-gr-basis"
-              className={SELECT_CLASS}
-              value={values.ground_rent_review_basis}
-              onChange={e => set('ground_rent_review_basis', e.target.value)}
-            >
-              {GROUND_RENT_REVIEW_OPTIONS.map(o => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
-          </div>
-          <div className="space-y-1">
-            <label htmlFor="unit-gr-date" className="text-sm font-medium">Ground rent review date</label>
-            <Input
-              id="unit-gr-date"
-              type="date"
-              value={values.ground_rent_review_date}
-              onChange={e => set('ground_rent_review_date', e.target.value)}
-            />
-          </div>
+          {/* Lease + ground rent fields stripped in 00033 (legacy cols dropped). Full
+              lease/GR surface re-introduced via unit_leases in a dedicated UI commit. */}
           {/* Flags */}
           <div className="flex flex-col gap-3 pt-1">
             <label className="flex items-center gap-2 text-sm cursor-pointer">

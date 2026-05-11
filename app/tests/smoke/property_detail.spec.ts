@@ -60,12 +60,9 @@ test.describe('Property detail — units', () => {
     await page.getByRole('button', { name: 'Add unit' }).click()
     await expect(page.getByRole('heading', { name: 'New unit' })).toBeVisible()
 
-    // Required field
+    // Required field. Lease + ground rent fields were stripped from UnitForm in
+    // migration 00033 — moved to unit_leases. The unit-create form is identity-only now.
     await page.getByLabel('Unit ref *').fill(marker)
-
-    // Optional lease fields
-    await page.getByLabel('Lease term (years)').fill('125')
-    await page.getByLabel('Ground rent (£/yr)').fill('250')
 
     await page.getByRole('button', { name: 'Save unit' }).click()
 
