@@ -5,6 +5,75 @@ Spec reference: PropOS Handoff Document v1.1 — Section 6.2.
 
 ---
 
+## 2026-05-11 — Phase 4 planning + Phase 1-3 retrospective gap analysis
+
+**Context:** Phase 3 closed and merged via PR #1 (commits 1i.1 through 1i.4 — role architecture rework, function-split, cross-phase audit, Tier-1 sweep). Build engineer reviewed a competitor product (Blockman) and surfaced a meaningful feature gap. Separately, a high-value product surface emerged from operational pain at the build engineer's day job: an **LPE/FME pack generator** for conveyancing. Before committing to Phase 4 (BSA module per the original spec roadmap), a retrospective on Phase 1-3 data-model coverage identified gaps that LPE/FME and BSA would both consume.
+
+**Forms clarified (LPE vs FME):**
+
+- **LPE1** (Leasehold Property Enquiries) — selling a leasehold flat in a managed building. Statutory regime: LTA 1985, LTA 1987, CLRA 2002, BSA 2022. Heavy on lease details, freeholder/RMC/RTM, service charge, Section 20 consultations, building compliance (FRA / EWS1 / gas / electrical / lift / asbestos).
+- **FME1** (Freehold Management Enquiries) — selling a freehold house on a managed estate. Statutory regime: Rentcharges Act 1977, restrictive covenants on title, estate management schemes. Heavy on estate rentcharge, restrictive covenants, common-parts infrastructure (roads / drainage / gates / open spaces), estate management company.
+
+The two forms share an outer shell (cover letter, contents, pack admin, audit trail, zip mechanics) but content sections diverge sharply. The generator implementation will branch on `form_type` to populate from different underlying data sources.
+
+**Gap analysis findings (14 gaps, three tiers):**
+
+**Critical (backfill before Phase 4 — data-model load-bearing):**
+
+- **G1** Freeholders / landlords as first-class entities (new `landlords` table). Today implicit.
+- **G2** RMC / RTM company model (new `management_companies` table). Today not modelled.
+- **G3** Structured lease metadata per unit (new `unit_leases` table, versioned). Today `units` carries basic ground rent only.
+- **G4** Ground rent schedule (nested in G3 or separate `ground_rent_schedules` table). Today single column value.
+- **G5** Document categorisation (`documents.document_type` enum + `include_in_sales_pack` flag + `lpe_category`/`fme_category` enums). Today free-form.
+- **G6** Structured compliance items (verify `compliance_items` has typed enum + dates + responsible-party + cert-document FK). Today loose per Phase 1.
+
+**Important (could land with consumer module — Phase 4c LPE generator or Phase 4 BSA):**
+
+- **G7** Disputes / FTT actions table. LPE Section 7.
+- **G8** Planned major works (separate from reactive `works_orders`). Drives Section 20 chains + LPE Section 6.
+- **G9** Insurance claims history (`insurance_claims` table). LPE Section 4.
+- **G10** Reserve fund granularity (computed view or extension on existing `bank_accounts`).
+- **G11** Forfeiture / s.146 / pre-action escalation. Folds into collection workflow (Phase 4a).
+
+**FME-specific (land with FME generator — Phase 4d):**
+
+- **G12** Estate assets (roads / drainage / gates / lighting / communal gardens).
+- **G13** Restrictive covenants register per property.
+- **G14** Adopted vs unadopted infrastructure flags.
+
+**Decision (revised phase plan — regulatory phase order preserved):**
+
+1. **1i.5** — Data backfill commit 1 (G1 + G2 + G3 + G4). Migration `00031` adds `landlords` + `management_companies` + `unit_leases` + `ground_rent_schedules`. ~1 week.
+2. **1i.6** — Data backfill commit 2 (G5 + G6). Migration `00032` adds document typing + tightens compliance items. ~3 days.
+3. **Phase 4** — BSA module. Original spec roadmap; HRB compliance for buildings >18m or 7+ storeys. Closes AUDIT R-8 (BSA citation canonicalisation).
+4. **Phase 4a** — Collection workflow (reminders → final notices → solicitor escalation). State machine on demands; LTA 1985 s.20B 18-month chain DB-enforced; interest calculation; G11 forfeiture/s.146 folds in.
+5. **Phase 4b** — Year end + formal accounting reports (Trial Balance, Balance Sheet, Income & Expenditure). Year-end state machine on `service_charge_accounts`; immutable snapshots; pinned to UK GAAP small-entity form.
+6. **Phase 4c** — LPE pack generator. Pulls G1-G6 + inline G7-G9. Schema: `lpe_packs` + `lpe_pack_responses` + `lpe_pack_documents` + `lpe_pack_downloads`. AI-assist for free-text via Claude API with strict prompt discipline. Two-stage HITL (responses reviewed → document set confirmed → issue). Edge Function `issue-lpe-pack` generates a tamper-evident zip (SHA-256 + audit log).
+7. **Phase 4d** — FME pack generator. Reuses LPE outer shell; consumes G12-G14 + restrictive covenants + estate assets.
+8. **Phase 5** — Leaseholder portal + Direct Debit / Standing Order + Document Depot UX + GDPR data-request report + Health & Safety module + remaining Tier 2 gaps from the Blockman parity list.
+
+**Rationale.** Regulatory phase order preserved (BSA before LPE) on the basis that BSA is a statutory requirement for HRBs while LPE is a commercial/operational deliverable — though the LPE generator carries higher commercial value (every leasehold sale × ~£200-500 fee) and addresses daily user pain. Data backfill (1i.5/1i.6) lands first so Phase 4 commits compose against a complete data model — cheaper than retrofitting tables mid-Phase-4. G7-G14 stay grouped with the modules that consume them to keep migration churn proportional to user-visible value.
+
+**LPE/FME zip generation architecture (locked at planning):** server-side Edge Function `issue-lpe-pack`. Streams a zip containing cover letter + contents page + LPE1/FME1 form PDF (rendered from `lpe_pack_responses`) + every included document. SHA-256 of the issued zip stored on `lpe_packs.zip_content_hash` for tamper-evidence. Signed URLs with 24h expiry for solicitor download; `lpe_pack_downloads` table audits every retrieval. Required documents categorised via `documents.lpe_category` enum (lease / accounts / budget / insurance_schedule / fra / ews1 / eicr / gas_safety / asbestos / s20_intent / etc.). HITL gates enforced by DB CHECK: `lpe_pack_responses.reviewed_at IS NULL` blocks transition to `status='issued'`.
+
+**Expanded gap inventory (added 2026-05-11 after deeper competitor-parity audit):**
+
+A structured walkthrough of every Blockman menu / column / button / form after initial planning identified 16 additional gaps (G15-G30) not surfaced by the first-pass review. The original phase plan and prioritisation hold — these get folded in:
+
+- **Folded into 1i.6** (data backfill commit 2): G17 Interested Parties register (LPE-relevant + forfeiture pre-action protocol), G16 Emergency Contacts per unit, G19 Section 153 (CLRA 2002) compliance flag per demand.
+- **Verification only (may need no migration)**: G26 Previous Owners — confirm `leaseholders.is_current` + transfer date model supports clean ownership history per unit; if not, add minimal table.
+- **Folded into Phase 4a** (collection workflow): G18 Payment Mandates (DD/SO foundational schema), G20 Ground Rent Transfer-to-Landlord workflow, G24 Demand scheduling-in-advance, G27 Issues tracker (extends G7 disputes).
+- **Folded into Phase 4b** (year-end + reports): G25 Creditors / accounts payable operational view.
+- **Phase 5 / opportunistic**: G15 Tenants distinct from leaseholders, G21 Agency Service File (managing-agent ↔ block engagement), G22 Professional contacts roster per block, G23 Company secretarial workflow for RMC/RTM, G28 Downloads/exports module, G29 Lessee Unit Manager (per-leaseholder cross-block view), G30 Settings module verification.
+
+**Pattern established — competitor-parity audit at phase boundaries:**
+
+Going forward, every phase boundary includes a structured competitor-parity audit pass. Walk through Blockman (and any other relevant benchmark) menu-by-menu, screenshot-by-screenshot, with the current PropOS feature surface alongside. Each menu item categorised as ✅ Have equivalent / 🟡 Partial / 🔴 Gap (assign Gn ID + phase tag). Output addended to the phase handover doc — even if "no new gaps surfaced, audit complete".
+
+**Build engineer has full Blockman PM access.** Future Claude sessions doing competitor analysis SHOULD ASK for specific menu details, screenshots, or workflow walkthroughs rather than guess from memory. Asking is cheaper than missing a gap. The 2026-05-11 audit pass surfaced 16 additional gaps after the initial 14-gap inventory was already "complete" per first-pass review — a process gap, not a product gap. The new memory rule `feedback_competitor_parity_audit.md` captures this discipline.
+
+---
+
 ## 2026-05-10 — Cross-phase audit Tier-1 sweep (commit 1i.4 — post-Phase-3, pre-Phase-4)
 
 **Context:** `docs/AUDIT_2026-05-10.md` surfaced 31 findings across the lexical-consistency dimension after 1i.3 wrapped Phase 3. 3 CRITICAL + 9 Tier-1 + 11 Tier-2 + 8 Tier-3. The 3 CRITICAL findings (A-1 / A-2 / A-3) form one attack chain: 1i.3's widening of `is_pm_or_admin()` to include `accounts` + `senior_pm` cascaded through the RLS write policies on `payment_authorisations` / `contractors` / `bank_accounts`, but the segregation gates (self-auth, payee-setter ≠ release-authoriser, closure dual-auth) were enforced application-side only. The Tier-1 cluster is statutory-citation drift carried over from 1d / 1e / 1g.5 era code on the deprecated "RICS Client Money Rule 4.7" framing. Two non-atomic flows (B-3, B-5) carried regulatory load. The audit was deliberately written as docs-only so it could land independently of either commit; PR #1 carried the audit + 1i.3 + Handoff v1.7 onto a feature branch and the Tier-1 sweep landed stacked on top as a two-commit decomposition (1i.4 = commit 1 security + commit 2 UI/citation/B-5 wrap). Plan-first signed off via the handover doc (`docs/HANDOVER_audit_tier1.md`).
