@@ -236,25 +236,79 @@ test.describe('1i.6 — documents/compliance/emergency/interested/s.153 RLS + co
     expect(data?.section_153_compliant).toBe(true)
   })
 
-  // ── Smoke 7 — leaseholder reads own-unit emergency_contacts (FORWARD) ────
-  // FORWARD: pending leaseholder fixture user (leaseholder@propos.local with a
-  // leaseholders.user_id linkage). Currently the 6 demo users are all staff
-  // (admin/pm/director/accounts/senior_pm/auditor). When the leaseholder fixture
-  // lands (Phase 5 leaseholder-portal commit), un-.fixme and exercise:
-  //   - leaseholder signs in
-  //   - SELECT emergency_contacts WHERE unit_id = own_unit → returns rows
-  //   - SELECT emergency_contacts WHERE unit_id = neighbour's unit → returns 0 rows
-  test.fixme('emergency_contacts — leaseholder reads own-unit contacts (FORWARD: leaseholder fixture)', async () => {
-    // Anchor: 00032 RLS policy emergency_contacts_leaseholder_select.
+  // ── Smoke 7 — leaseholder reads own-unit emergency_contacts ──────────────
+  // Un-fixme'd in 00033 (demo seed + leaseholder fixture via test_users.sql).
+  // The leaseholder@propos.local auth user is linked to the 'Demo Leaseholder
+  // Maple House Flat 1' row (is_current=true). The 00033 seed inserts a
+  // 'Demo Key Holder for Maple House Flat 1' emergency_contacts row on that
+  // same unit, so the RLS policy emergency_contacts_leaseholder_select should
+  // permit the SELECT.
+  // Anchor: 00032 RLS policy emergency_contacts_leaseholder_select.
+  test('emergency_contacts — leaseholder reads own-unit contacts', async () => {
+    const { data: auth, error: authErr } = await supabase.auth.signInWithPassword({
+      email: 'leaseholder@propos.local', password: 'PropOS2026!',
+    })
+    expect(authErr).toBeNull()
+    expect(auth.user).not.toBeNull()
+
+    // Own-unit read: leaseholder is linked to Maple House Flat 1 (per test_users.sql
+    // Step 3). The seeded emergency contact for that unit MUST be visible.
+    const { data: rows, error: readErr } = await supabase
+      .from('emergency_contacts')
+      .select('id, name, unit_id, contact_type')
+      .like('name', 'Demo Key Holder for Maple House Flat 1')
+    expect(readErr).toBeNull()
+    expect(rows).not.toBeNull()
+    expect((rows ?? []).length).toBeGreaterThanOrEqual(1)
+    expect(rows?.[0].contact_type).toBe('key_holder')
   })
 
-  // ── Smoke 8 — landlord-exempt s.153 path (FORWARD) ───────────────────────
-  // FORWARD: pending demo seed populating properties.landlord_id (currently NULL
-  // per 00031 schema-only migration). When the demo-seed commit lands:
-  //   - seed a landlord with section_153_required=false, link to a property
-  //   - INSERT demand status='issued' section_153_compliant=false → succeeds
-  // Anchor: 00032 enforce_section_153_on_issue function landlord-exempt branch.
-  test.fixme('demands — landlord-exempt s.153 path (FORWARD: demo seed for landlords)', async () => {
-    // Anchor: 00032 enforce_section_153_on_issue v_required:=false branch.
+  // ── Smoke 8 — landlord-exempt s.153 path ─────────────────────────────────
+  // Un-fixme'd in 00033. Cedar Estate's landlord has section_153_required=false
+  // (per migration 00033 Section B). A demand against a Cedar Estate unit
+  // issued with section_153_compliant=false should succeed (the trigger's
+  // v_required branch evaluates false).
+  // Anchor: 00032 enforce_section_153_on_issue v_required:=false branch.
+  test('demands — landlord-exempt s.153 path (Cedar Estate, section_153_required=false)', async () => {
+    const { data: auth, error: authErr } = await supabase.auth.signInWithPassword({
+      email: 'pm@propos.local', password: 'PropOS2026!',
+    })
+    if (authErr || !auth.user) throw new Error(`pm sign-in failed: ${authErr?.message}`)
+
+    // Resolve Cedar Estate's property + first unit explicitly (signInAsPm picks
+    // the first property in the firm — could be any of Maple/Birchwood/Cedar).
+    const { data: cedar } = await supabase
+      .from('properties').select('id, firm_id').eq('name', 'Cedar Estate').single()
+    if (!cedar) throw new Error('Cedar Estate property not found (00033 seed required)')
+
+    const { data: unit } = await supabase
+      .from('units').select('id').eq('property_id', cedar.id).limit(1).single()
+    if (!unit) throw new Error('No unit on Cedar Estate')
+
+    const { data: lh } = await supabase
+      .from('leaseholders').select('id')
+      .eq('unit_id', unit.id).eq('is_current', true)
+      .like('full_name', 'Demo Leaseholder Cedar Estate%')
+      .limit(1).single()
+    if (!lh) throw new Error('No demo leaseholder on Cedar Estate (00033 seed required)')
+
+    // Insert demand status='issued' WITHOUT s.153 compliance — should succeed
+    // because Cedar's landlord opts out of the s.153 service requirement.
+    const { data, error } = await supabase
+      .from('demands')
+      .insert({
+        firm_id:        cedar.firm_id,
+        property_id:    cedar.id,
+        unit_id:        unit.id,
+        leaseholder_id: lh.id,
+        demand_type:    'service_charge',
+        amount:         50.00,
+        status:         'issued',
+        section_153_compliant: false,
+        notes:          `${PREFIX} landlord-exempt s.153 pass test`,
+      })
+      .select('id, section_153_compliant').single()
+    expect(error).toBeNull()
+    expect(data?.section_153_compliant).toBe(false)
   })
 })

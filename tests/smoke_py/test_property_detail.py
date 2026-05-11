@@ -35,7 +35,7 @@ def test_unit_create_round_trip(page: Page, base_url: str):
     expect(page.get_by_role("heading", name="New unit")).to_be_visible()
 
     page.get_by_label("Unit ref *").fill(marker)
-    page.get_by_label("Lease term (years)").fill("125")
+    # Lease term stripped from UnitForm in 00033 (moved to unit_leases).
     page.get_by_role("button", name="Save unit").click()
 
     expect(page.get_by_role("heading", name="New unit")).not_to_be_visible()

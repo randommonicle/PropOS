@@ -1,6 +1,17 @@
 """
 Smoke tests — Properties module
 Verifies list, seed data, and property creation round-trip.
+
+Leak note (00033): test_create_property creates 'Py Smoke Block <epoch>' rows
+via the UI. Properties has no Delete UI yet (units + leaseholders do; properties
+do not — verified 2026-05-11). Each run therefore leaks one bare property row
+with no FK children. Migration 00033's Section A sweep
+(DELETE FROM properties WHERE name LIKE 'Py Smoke Block %') is the safety net —
+re-applying the migration drops accumulated residue.
+
+FORWARD: when properties grows a Delete UI commit (Phase 5 settings audit or
+opportunistic), add a teardown step here that clicks into the property and
+deletes it, mirroring the units / leaseholders delete-with-confirmation flow.
 """
 import time
 from playwright.sync_api import Page, expect
@@ -18,6 +29,7 @@ def test_seed_properties_displayed(page: Page, base_url: str):
 
 
 def test_create_property(page: Page, base_url: str):
+    # FORWARD: cleanup pending properties Delete UI commit — see module docstring.
     unique_name = f"Py Smoke Block {int(time.time())}"
     page.goto(f"{base_url}/properties")
 

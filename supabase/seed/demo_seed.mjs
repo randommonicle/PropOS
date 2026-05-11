@@ -118,9 +118,11 @@ for (const prop of properties) {
   // Add sample units
   const unitCount = Math.min(prop.total_units ?? 3, 3)
   for (let i = 1; i <= unitCount; i++) {
+    // lease_term_years dropped in 00033 — moved to unit_leases (current row per unit).
+    // The demo-seed migration 00033 seeds the corresponding unit_leases row.
     await client.query(`
-      INSERT INTO units (firm_id, property_id, unit_ref, unit_type, floor, lease_term_years)
-      VALUES ($1, $2, $3, 'flat', $4, 125)
+      INSERT INTO units (firm_id, property_id, unit_ref, unit_type, floor)
+      VALUES ($1, $2, $3, 'flat', $4)
     `, [firmId, propertyId, `Flat ${i}`, i - 1])
   }
 
