@@ -15,13 +15,19 @@
 - `service_charge_accounts` status lifecycle (draft → active → reconciling → finalised) mirrors RICS service charge accounting obligations.
 - `demands.s21b_attached` enforcement (cannot issue demand without Summary of Rights) satisfies LTA 1985 s.21B.
 
-## Building Safety Act 2022
+## Building Safety Act 2022 — Higher-Risk Building
+
+Canonical citation form (AUDIT R-8 close in 00034): `Building Safety Act 2022 — Higher-Risk Building`. Used verbatim in user-facing UI strings; specific statutory section citations (`s.78`, `s.83`, `s.85`, `s.88`, `s.91`) retain their concrete form in migration comments and audit-log surfaces.
 
 - `golden_thread_records` table is immutable by design (no `updated_at`, RLS blocks DELETE and UPDATE).
 - `pgAudit` captures all DML at the database level for the statutory audit trail.
-- `buildings_bsa.is_hrb` flag gates BSA-specific workflows. All properties track fire risk assessment regardless of HRB status.
-- `bsa_mandatory_occurrences` satisfies mandatory occurrence reporting obligations for HRBs under BSA 2022.
-- The Golden Thread records are superseded (not deleted or overwritten) — new record created with `superseded_by_id` set on the old record.
+- `properties.is_hrb` flag gates Higher-Risk Building workflows (1:1-matched to `buildings_bsa.is_hrb`); all properties track fire risk assessment regardless of HRB status.
+- `bsa_mandatory_occurrences` satisfies mandatory occurrence reporting obligations for Higher-Risk Buildings under Building Safety Act 2022 s.78.
+- `principal_accountable_persons` (00034) backs the multi-PAP regime per Building Safety Act 2022 s.83 — corporate and resident accountable persons coexist via an identity-XOR check.
+- `building_safety_cases` (00034) carries the per-Higher-Risk-Building Safety Case Report per Building Safety Act 2022 s.85, with supersede-chain immutability (no `updated_at`; revisions create new rows).
+- `safety_strategies` (00034) carries Fire and Structural strategies via a `strategy_type` discriminator; review cadence + responsible party tracked structurally.
+- `golden_thread_documents` (00034) replaces the inline `golden_thread_records.document_ids[]` with a proper junction (per-link metadata, primary-flag partial-unique idx).
+- Golden Thread records are superseded (not deleted or overwritten) — new record created with `superseded_by_id` set on the old record.
 
 ## LTA 1985 Compliance
 
