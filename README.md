@@ -160,7 +160,7 @@ Full decision log: [`docs/DECISIONS.md`](docs/DECISIONS.md)
 | 2 — Compliance & Works | ✅ Complete | Compliance tracker (RAG), insurance tracker, contractor register + managed trade categories, works orders, dispatch engine (token + email), contractor response page, Section 20 full lifecycle, UX polish |
 | 3 — Financial | In progress | ✓ Bank accounts, ✓ Service charge accounts, ✓ Demands, ✓ Transactions, ✓ Payment authorisations (dual-auth), ✓ Bank account closure dual-auth. Bank reconciliation and statement import next. |
 | 4 — Portals | Planned | Leaseholder portal, maintenance requests |
-| 5 — BSA Module | Planned | Golden Thread, mandatory occurrences, HRB register |
+| 5 — Building Safety Act 2022 — Higher-Risk Building module | In progress | Golden Thread (00009), mandatory occurrences, HRB register; Phase 4 expansion (00034) adds Principal Accountable Persons junction, Building Safety Cases, Fire/Structural Safety Strategies, and the golden-thread documents junction. AUDIT R-8 BSA citation canonicalisation closed in 00034 sweep. |
 | 6 — Reporting | Planned | PDF reports, AGM packs, Section 20B schedules |
 | 7 — AI Layer | Planned | Document AI, works triage, compliance alerts |
 | 8 — Self-host | Planned | Docker + Cloudflare Tunnel deployment mode |

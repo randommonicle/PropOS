@@ -217,7 +217,7 @@ function PropertyForm({ firmId, onSaved, onCancel }: PropertyFormProps) {
               onChange={e => set('is_hrb', e.target.checked)}
               className="h-4 w-4"
             />
-            <label htmlFor="is_hrb" className="text-sm">Higher Risk Building (HRB) — BSA 2022</label>
+            <label htmlFor="is_hrb" className="text-sm">Higher-Risk Building (HRB) — Building Safety Act 2022</label>
           </div>
           {error && <p className="col-span-2 text-sm text-destructive">{error}</p>}
           <div className="col-span-2 flex gap-2 justify-end pt-2">

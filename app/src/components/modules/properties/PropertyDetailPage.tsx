@@ -205,7 +205,7 @@ export function PropertyDetailPage() {
                   <Field label="Build year"    value={property.build_year?.toString() ?? '—'} />
                   <Field label="Listed status" value={property.listed_status ?? '—'} />
                   <Field label="Managing since" value={formatDate(property.managing_since)} />
-                  <Field label="HRB"           value={property.is_hrb ? 'Yes — BSA applies' : 'No'} />
+                  <Field label="HRB"           value={property.is_hrb ? 'Yes — Higher-Risk Building (Building Safety Act 2022)' : 'No'} />
                   {property.is_hrb && <Field label="Storeys"    value={property.storey_count?.toString() ?? '—'} />}
                   {property.is_hrb && <Field label="Height (m)" value={property.height_metres?.toString() ?? '—'} />}
                 </dl>
